@@ -5,7 +5,13 @@ import { ArrowRight, Sprout } from "lucide-react";
 import { loginAction, signupAction } from "@/app/actions/auth";
 import { translate, type Locale } from "@/lib/i18n";
 
-export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
+export function AuthPanel({
+  initialLocale,
+  redirectTo = "/",
+}: {
+  initialLocale: Locale;
+  redirectTo?: string;
+}) {
   const [locale, setLocale] = useState<Locale>(initialLocale);
   const [registering, setRegistering] = useState(false);
   const [loginState, loginFormAction, loginPending] = useActionState(
@@ -26,15 +32,12 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
       </div>
       <div className="auth-layout">
         <section className="auth-story">
-          <div className="eyebrow"><span className="eyebrow-dot" /> Farm operations, made clear</div>
-          <h1>Grow with a clearer view of your farm.</h1>
-          <p>
-            Keep crop cycles, field work, people and costs connected—from
-            planting day through the last harvest.
-          </p>
+          <div className="eyebrow"><span className="eyebrow-dot" /> {t("authStoryEyebrow")}</div>
+          <h1>{t("authHeadline")}</h1>
+          <p>{t("authDescription")}</p>
           <div className="auth-story-foot">
             <div className="story-avatar">S</div>
-            <span>Made for the work that happens in the field.</span>
+            <span>{t("authStoryFoot")}</span>
           </div>
           <div className="story-decoration story-decoration-one" />
           <div className="story-decoration story-decoration-two" />
@@ -48,13 +51,13 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
               onChange={(event) => setLocale(event.target.value as Locale)}
               value={locale}
             >
-              <option value="en">English</option>
-              <option value="sw">Kiswahili</option>
+              <option value="en">{t("english")}</option>
+              <option value="sw">{t("kiswahili")}</option>
             </select>
           </div>
           <div className="auth-heading">
             <h2>{registering ? t("createAccount") : t("signIn")}</h2>
-            <p>{registering ? t("setupRequired") : "Welcome back. Sign in to continue."}</p>
+            <p>{registering ? t("setupRequired") : t("welcomeBack")}</p>
           </div>
 
           {registering ? (
@@ -70,7 +73,7 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
               <label className="field">
                 <span>{t("password")}</span>
                 <input autoComplete="new-password" name="password" type="password" minLength={10} required />
-                <small>Use at least 10 characters.</small>
+                <small>{t("passwordHint")}</small>
               </label>
               <label className="field">
                 <span>{t("farmName")}</span>
@@ -81,14 +84,16 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
                 <input name="region" autoComplete="address-level1" />
               </label>
               <input name="locale" type="hidden" value={locale} />
+              <input name="redirectTo" type="hidden" value={redirectTo} />
               <button className="button button-primary auth-submit" disabled={signupPending} type="submit">
-                {signupPending ? "Creating…" : t("createWorkspace")}
+                {signupPending ? t("creating") : t("createWorkspace")}
                 <ArrowRight size={17} />
               </button>
               <p aria-live="polite" className="form-message" role="status">{signupState.message}</p>
             </form>
           ) : (
             <form action={loginFormAction} className="auth-form">
+              <input name="redirectTo" type="hidden" value={redirectTo} />
               <label className="field">
                 <span>{t("email")}</span>
                 <input autoComplete="email" name="email" type="email" required />
@@ -98,7 +103,7 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
                 <input autoComplete="current-password" name="password" type="password" required />
               </label>
               <button className="button button-primary auth-submit" disabled={loginPending} type="submit">
-                {loginPending ? "Signing in…" : t("login")}
+                {loginPending ? t("signingIn") : t("login")}
                 <ArrowRight size={17} />
               </button>
               <p aria-live="polite" className="form-message" role="status">{loginState.message}</p>
@@ -116,7 +121,7 @@ export function AuthPanel({ initialLocale }: { initialLocale: Locale }) {
       </div>
       <footer className="auth-footer">
         <span>© {new Date().getFullYear()} Shamba</span>
-        <span>Built for better farm records</span>
+        <span>{t("authFooter")}</span>
       </footer>
     </main>
   );

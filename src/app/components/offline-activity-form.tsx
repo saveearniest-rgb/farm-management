@@ -22,7 +22,7 @@ export function OfflineActivityForm({
   const [pendingLogs, setPendingLogs] = useState<PendingLog[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const t = (key: string) => translate(locale, key);
+  const t = useCallback((key: string) => translate(locale, key), [locale]);
 
   const syncRows = useCallback(async (rows: PendingLog[]) => {
     if (!navigator.onLine) return;
@@ -35,15 +35,15 @@ export function OfflineActivityForm({
       formData.set("loggedAt", log.loggedAt.slice(0, 10));
       const result = await createActivityLogAction({ message: "" }, formData);
       if (!result.success) {
-        setMessage(result.message || "Some field entries need attention before they can sync.");
+        setMessage(result.message || t("offlineSyncNeedsAttention"));
         return;
       }
       await removePendingLog(log.id);
     }
     const remaining = await listPendingLogs();
     setPendingLogs(remaining);
-    if (rows.length > 0) setMessage("Saved field entries synced.");
-  }, []);
+    if (rows.length > 0) setMessage(t("offlineSyncSaved"));
+  }, [t]);
 
   const syncPending = useCallback(async () => {
     if (!navigator.onLine) return;
@@ -56,7 +56,7 @@ export function OfflineActivityForm({
     let active = true;
     if (!("indexedDB" in window)) {
       queueMicrotask(() => {
-        if (active) setMessage("Offline storage is not available in this browser.");
+        if (active) setMessage(t("offlineStorageUnavailable"));
       });
     } else {
       void listPendingLogs().then((rows) => {
@@ -64,16 +64,16 @@ export function OfflineActivityForm({
         setPendingLogs(rows);
         if (navigator.onLine) {
           void syncRows(rows).catch((error: unknown) => {
-            setMessage(error instanceof Error ? error.message : "Could not sync field entries.");
+            setMessage(error instanceof Error ? error.message : t("offlineSyncFailed"));
           });
         }
       }).catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "Could not open offline storage.");
+        setMessage(error instanceof Error ? error.message : t("offlineStorageOpenFailed"));
       });
     }
     const handleOnline = () => {
       void syncPending().catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "Could not sync field entries.");
+        setMessage(error instanceof Error ? error.message : t("offlineSyncFailed"));
       });
     };
     window.addEventListener("online", handleOnline);
@@ -81,7 +81,7 @@ export function OfflineActivityForm({
       active = false;
       window.removeEventListener("online", handleOnline);
     };
-  }, [syncPending, syncRows]);
+  }, [syncPending, syncRows, t]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -97,7 +97,7 @@ export function OfflineActivityForm({
       loggedAt: String(data.get("loggedAt") ?? ""),
     };
     if (!log.body) {
-      setMessage("Write a short field note before saving.");
+      setMessage(t("offlineNoteRequired"));
       return;
     }
 
@@ -107,12 +107,12 @@ export function OfflineActivityForm({
       setPendingLogs(await listPendingLogs());
       form.reset();
       if (!navigator.onLine) {
-        setMessage("Saved on this device. It will sync when you are back online.");
+        setMessage(t("offlineEntrySaved"));
       } else {
         await syncPending();
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save the field entry.");
+      setMessage(error instanceof Error ? error.message : t("offlineEntrySaveFailed"));
     } finally {
       setBusy(false);
     }
@@ -121,9 +121,9 @@ export function OfflineActivityForm({
   return (
     <div>
       <form className="record-form" onSubmit={submit}>
-        <FormField label="Date" name="loggedAt" type="date" />
+        <FormField label={t("offlineDate")} name="loggedAt" type="date" />
         <FormSelect
-          label="Crop cycle"
+          label={t("offlineCropCycle")}
           name="cycleId"
           required={false}
           options={cycles.map((cycle) => ({
@@ -131,15 +131,15 @@ export function OfflineActivityForm({
             label: `${cycle.cropName} · ${cycle.plotName}`,
           }))}
         />
-        <FormField label="Weather notes" name="weather" placeholder="Optional; recorded observation only" />
-        <FormField label="Who worked?" name="whoWorked" placeholder="Names or crew" />
+        <FormField label={t("offlineWeather")} name="weather" placeholder={t("offlineWeatherPlaceholder")} />
+        <FormField label={t("offlineWhoWorked")} name="whoWorked" placeholder={t("offlineNamesPlaceholder")} />
         <label className="field field-wide">
-          <span>Field note</span>
-          <textarea name="body" placeholder="What happened in the field today?" rows={4} required />
+          <span>{t("offlineFieldNote")}</span>
+          <textarea name="body" placeholder={t("offlineNotePlaceholder")} rows={4} required />
         </label>
         <div className="form-footer">
           <button className="button button-primary" type="submit" disabled={busy}>
-            {busy ? "Saving..." : t("save")}
+            {busy ? t("offlineSaving") : t("save")}
           </button>
           <p aria-live="polite" className="form-message" role="status">{message}</p>
         </div>
@@ -147,7 +147,7 @@ export function OfflineActivityForm({
       {pendingLogs.length > 0 && (
         <div className="sync-status">
           <span className="sync-indicator" />
-          {pendingLogs.length} {pendingLogs.length === 1 ? "entry is" : "entries are"} saved on this device and waiting to sync.
+          {pendingLogs.length} {t(pendingLogs.length === 1 ? "offlinePendingOne" : "offlinePendingMany")}
         </div>
       )}
     </div>

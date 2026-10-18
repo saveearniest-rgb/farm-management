@@ -1,10 +1,11 @@
 "use server";
 
-import { CropMode, DocumentStatus, ExpenseCategory, FarmRole, Prisma, TaskStatus, TenureType } from "@prisma/client";
+import { CropMode, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { tenantDb } from "@/lib/tenant-db";
 import type { FormState } from "@/lib/form-state";
 
 const optionalNumber = z.preprocess(
@@ -83,7 +84,7 @@ export async function createHoldingAction(
   }
 
   try {
-    await db.landHolding.create({
+    await tenantDb(context.farm.id, context.user.id).landHolding.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
@@ -150,14 +151,14 @@ export async function createPlotAction(
   }
   if (dateError(parsed.data.renewalDate ?? "")) return invalid("Enter a valid renewal date.");
 
-  const holding = await db.landHolding.findFirst({
+  const holding = await tenantDb(context.farm.id, context.user.id).landHolding.findFirst({
     where: { id: parsed.data.holdingId, farmId: context.farm.id },
     select: { id: true },
   });
   if (!holding) return invalid("Choose a land holding from this farm.");
 
   try {
-    await db.plot.create({
+    await tenantDb(context.farm.id, context.user.id).plot.create({
       data: {
         farmId: context.farm.id,
         holdingId: holding.id,
@@ -182,6 +183,93 @@ export async function createPlotAction(
 
   revalidatePath("/");
   return { message: "Plot added.", success: true };
+}
+
+export async function recordTenureDisputeAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can update tenure records.");
+  const parsed = z.object({
+    plotId: optionalText,
+    holdingId: optionalText,
+    occurredAt: z.string().optional(),
+    description: z.string().trim().min(5).max(2000),
+    status: z.enum(["OPEN", "RESOLVED"]),
+    resolution: optionalText,
+  }).safeParse({
+    plotId: value(formData, "plotId"),
+    holdingId: value(formData, "holdingId"),
+    occurredAt: value(formData, "occurredAt"),
+    description: value(formData, "description"),
+    status: value(formData, "status") || "OPEN",
+    resolution: value(formData, "resolution"),
+  });
+  if (!parsed.success || Boolean(parsed.data.plotId) === Boolean(parsed.data.holdingId)) {
+    return invalid("Choose exactly one plot or land holding and describe the dispute.");
+  }
+  if (dateError(parsed.data.occurredAt ?? "")) return invalid("Enter a valid dispute date.");
+  const tenant = tenantDb(context.farm.id, context.user.id);
+  const record = parsed.data.plotId
+    ? await tenant.plot.findFirst({ where: { id: parsed.data.plotId }, select: { id: true } })
+    : await tenant.landHolding.findFirst({ where: { id: parsed.data.holdingId }, select: { id: true } });
+  if (!record) return invalid("Choose a land record from this farm.");
+
+  await tenant.tenureDispute.create({
+    data: {
+      farmId: context.farm.id,
+      plotId: parsed.data.plotId || null,
+      holdingId: parsed.data.holdingId || null,
+      occurredAt: optionalDate(parsed.data.occurredAt ?? "") ?? new Date(),
+      description: parsed.data.description,
+      status: parsed.data.status,
+      resolution: parsed.data.resolution,
+    },
+  });
+  revalidatePath("/");
+  return { message: "Tenure dispute recorded.", success: true };
+}
+
+export async function archiveLandRecordAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can archive land records.");
+  const recordType = value(formData, "recordType");
+  const recordId = value(formData, "recordId");
+  if (!recordId || (recordType !== "plot" && recordType !== "holding")) {
+    return invalid("Choose a land record to archive.");
+  }
+  const tenant = tenantDb(context.farm.id, context.user.id);
+  if (recordType === "plot") {
+    const activeCycle = await tenant.cropCycle.findFirst({
+      where: { plotId: recordId, archivedAt: null, status: { not: "CLOSED" } },
+      select: { id: true },
+    });
+    if (activeCycle) return invalid("Close or archive the crop cycle before archiving its plot.");
+    const archived = await tenant.plot.updateMany({
+      where: { id: recordId, archivedAt: null },
+      data: { archivedAt: new Date() },
+    });
+    if (!archived.count) return invalid("The plot was not found or is already archived.");
+  } else {
+    const activePlot = await tenant.plot.findFirst({
+      where: { holdingId: recordId, archivedAt: null },
+      select: { id: true },
+    });
+    if (activePlot) return invalid("Archive or move all plots before archiving this land holding.");
+    const archived = await tenant.landHolding.updateMany({
+      where: { id: recordId, archivedAt: null },
+      data: { archivedAt: new Date() },
+    });
+    if (!archived.count) return invalid("The land holding was not found or is already archived.");
+  }
+  revalidatePath("/");
+  return { message: "Land record archived.", success: true };
 }
 
 const stageDefaults: Record<CropMode, Array<{ key: string; nameEn: string; nameSw: string; dayOffset: number | null }>> = {
@@ -297,7 +385,7 @@ export async function createCropTypeAction(
   }
 
   try {
-    await db.cropType.create({
+    await tenantDb(context.farm.id, context.user.id).cropType.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
@@ -362,7 +450,7 @@ export async function createCropCycleAction(
   if (dateError(parsed.data.plantingAt ?? "")) return invalid("Enter a valid planting date.");
 
   try {
-    const result = await db.$transaction(async (tx) => {
+    const result = await tenantDb(context.farm.id, context.user.id).$transaction(async (tx) => {
       const [plot, cropType] = await Promise.all([
         tx.plot.findFirst({ where: { id: parsed.data.plotId, farmId: context.farm.id } }),
         tx.cropType.findFirst({
@@ -372,6 +460,7 @@ export async function createCropCycleAction(
       ]);
       if (!plot || !cropType) return null;
 
+      const plantingAt = optionalDate(parsed.data.plantingAt ?? "");
       const cycle = await tx.cropCycle.create({
         data: {
           farmId: context.farm.id,
@@ -380,7 +469,10 @@ export async function createCropCycleAction(
           variety: parsed.data.variety || cropType.varietyDefault,
           areaValue: parsed.data.areaValue,
           areaUnit: parsed.data.areaUnit,
-          plantingAt: optionalDate(parsed.data.plantingAt ?? ""),
+          plantingAt,
+          expectedHarvestAt: plantingAt && cropType.cycleLengthDays
+            ? new Date(plantingAt.getTime() + cropType.cycleLengthDays * 86_400_000)
+            : null,
           status: cropType.mode === "NURSERY" ? "NURSERY" : "PLANNED",
           expectedYield: parsed.data.expectedYield,
           yieldUnit: parsed.data.yieldUnit,
@@ -463,7 +555,7 @@ export async function createNurseryBatchAction(
   if (!parsed.success) return invalid("Choose a crop cycle and enter the seed quantity.");
   if (dateError(parsed.data.sownAt ?? "")) return invalid("Enter a valid sowing date.");
 
-  const cycle = await db.cropCycle.findFirst({
+  const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
     where: { id: parsed.data.cycleId, farmId: context.farm.id },
     include: { cropType: { select: { mode: true } } },
   });
@@ -472,7 +564,7 @@ export async function createNurseryBatchAction(
   }
 
   try {
-    await db.nurseryBatch.create({
+    await tenantDb(context.farm.id, context.user.id).nurseryBatch.create({
       data: {
         farmId: context.farm.id,
         cycleId: cycle.id,
@@ -525,14 +617,14 @@ export async function createNurseryCheckAction(
   ) {
     return invalid("Enter whole-number counts; surviving seedlings cannot exceed germinated seeds.");
   }
-  const batch = await db.nurseryBatch.findFirst({
+  const batch = await tenantDb(context.farm.id, context.user.id).nurseryBatch.findFirst({
     where: { id: parsed.data.batchId, farmId: context.farm.id },
     select: { id: true },
   });
   if (!batch) return invalid("Choose a nursery batch from this farm.");
 
   try {
-    await db.nurseryCheck.create({
+    await tenantDb(context.farm.id, context.user.id).nurseryCheck.create({
       data: {
         farmId: context.farm.id,
         batchId: batch.id,
@@ -574,14 +666,14 @@ export async function createTransplantAction(
     return invalid("Enter valid transplanted and discarded quantities.");
   }
   if (dateError(parsed.data.movedAt ?? "")) return invalid("Enter a valid transplant date.");
-  const batch = await db.nurseryBatch.findFirst({
+  const batch = await tenantDb(context.farm.id, context.user.id).nurseryBatch.findFirst({
     where: { id: parsed.data.batchId, farmId: context.farm.id },
     select: { id: true },
   });
   if (!batch) return invalid("Choose a nursery batch from this farm.");
 
   try {
-    await db.transplant.create({
+    await tenantDb(context.farm.id, context.user.id).transplant.create({
       data: {
         farmId: context.farm.id,
         batchId: batch.id,
@@ -619,14 +711,14 @@ export async function createTaskAction(
     notes: value(formData, "notes"),
   });
   if (!parsed.success || dateError(parsed.data.dueAt)) return invalid("Choose a crop cycle and valid task date.");
-  const cycle = await db.cropCycle.findFirst({
+  const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
     where: { id: parsed.data.cycleId, farmId: context.farm.id },
     select: { id: true, plotId: true },
   });
   if (!cycle) return invalid("Choose a crop cycle from this farm.");
 
   try {
-    await db.task.create({
+    await tenantDb(context.farm.id, context.user.id).task.create({
       data: {
         farmId: context.farm.id,
         cycleId: cycle.id,
@@ -647,6 +739,231 @@ export async function createTaskAction(
   return { message: "Task added.", success: true };
 }
 
+async function farmPlotAndCycle(
+  farmId: string,
+  actorUserId: string,
+  plotId: string,
+  cycleId?: string,
+) {
+  const tenant = tenantDb(farmId, actorUserId);
+  const plot = await tenant.plot.findFirst({
+    where: { id: plotId, farmId, archivedAt: null },
+    select: { id: true },
+  });
+  if (!plot) return false;
+  if (!cycleId) return true;
+  const cycle = await tenant.cropCycle.findFirst({
+    where: { id: cycleId, plotId, farmId, archivedAt: null },
+    select: { id: true },
+  });
+  return Boolean(cycle);
+}
+
+export async function recordWeatherAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const observedAt = value(formData, "observedAt");
+  const parsed = z.object({
+    plotId: z.string().min(1),
+    cycleId: optionalText,
+    rainfallMm: optionalNumber,
+    temperatureC: optionalNumber,
+    notes: optionalText,
+  }).safeParse({
+    plotId: value(formData, "plotId"),
+    cycleId: value(formData, "cycleId") || undefined,
+    rainfallMm: value(formData, "rainfallMm"),
+    temperatureC: value(formData, "temperatureC"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(observedAt) ||
+      (parsed.data.rainfallMm !== undefined && parsed.data.rainfallMm < 0) ||
+      (parsed.data.temperatureC !== undefined &&
+        (parsed.data.temperatureC < -80 || parsed.data.temperatureC > 80))) {
+    return invalid("Enter a valid plot, date, rainfall and temperature.");
+  }
+  if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
+    return invalid("Choose a plot and crop cycle from this farm.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).weatherLog.create({
+      data: {
+        farmId: context.farm.id,
+        plotId: parsed.data.plotId,
+        cycleId: parsed.data.cycleId || null,
+        observedAt: optionalDate(observedAt) ?? new Date(),
+        rainfallMm: parsed.data.rainfallMm,
+        temperatureC: parsed.data.temperatureC,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Weather observation recorded.", success: true };
+}
+
+export async function recordScoutingAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const observedAt = value(formData, "observedAt");
+  const parsed = z.object({
+    plotId: z.string().min(1),
+    cycleId: optionalText,
+    issue: z.string().trim().min(2).max(120),
+    severity: z.nativeEnum(ScoutingSeverity),
+    notes: optionalText,
+  }).safeParse({
+    plotId: value(formData, "plotId"),
+    cycleId: value(formData, "cycleId") || undefined,
+    issue: value(formData, "issue"),
+    severity: value(formData, "severity"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(observedAt)) return invalid("Enter a pest or disease, severity and valid date.");
+  if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
+    return invalid("Choose a plot and crop cycle from this farm.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).scoutingLog.create({
+      data: {
+        farmId: context.farm.id,
+        plotId: parsed.data.plotId,
+        cycleId: parsed.data.cycleId || null,
+        observedAt: optionalDate(observedAt) ?? new Date(),
+        issue: parsed.data.issue,
+        severity: parsed.data.severity,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Scouting observation recorded.", success: true };
+}
+
+export async function recordSprayAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const appliedAt = value(formData, "appliedAt");
+  const parsed = z.object({
+    plotId: z.string().min(1),
+    cycleId: optionalText,
+    product: z.string().trim().min(2).max(120),
+    activeIngredient: optionalText,
+    batch: optionalText,
+    dose: optionalText,
+    preHarvestIntervalDays: optionalNumber,
+    notes: optionalText,
+  }).safeParse({
+    plotId: value(formData, "plotId"),
+    cycleId: value(formData, "cycleId") || undefined,
+    product: value(formData, "product"),
+    activeIngredient: value(formData, "activeIngredient"),
+    batch: value(formData, "batch"),
+    dose: value(formData, "dose"),
+    preHarvestIntervalDays: value(formData, "preHarvestIntervalDays"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(appliedAt) ||
+      (parsed.data.preHarvestIntervalDays !== undefined &&
+        (!Number.isInteger(parsed.data.preHarvestIntervalDays) ||
+          parsed.data.preHarvestIntervalDays < 0 ||
+          parsed.data.preHarvestIntervalDays > 365))) {
+    return invalid("Enter a product, valid application date and pre-harvest interval (0–365 days).");
+  }
+  if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
+    return invalid("Choose a plot and crop cycle from this farm.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).sprayRecord.create({
+      data: {
+        farmId: context.farm.id,
+        plotId: parsed.data.plotId,
+        cycleId: parsed.data.cycleId || null,
+        product: parsed.data.product,
+        activeIngredient: parsed.data.activeIngredient,
+        batch: parsed.data.batch,
+        dose: parsed.data.dose,
+        appliedAt: optionalDate(appliedAt) ?? new Date(),
+        preHarvestIntervalDays: parsed.data.preHarvestIntervalDays,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Spray record saved. Check harvest dates against the pre-harvest interval.", success: true };
+}
+
+export async function recordSubsidyReceiptAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can record subsidised inputs.");
+  const receivedAt = value(formData, "receivedAt");
+  const parsed = z.object({
+    input: z.string().trim().min(2).max(120),
+    quantity: positiveNumber,
+    unit: z.string().trim().min(1).max(20),
+    price: optionalNumber,
+    source: optionalText,
+    notes: optionalText,
+  }).safeParse({
+    input: value(formData, "input"),
+    quantity: value(formData, "quantity"),
+    unit: value(formData, "unit"),
+    price: value(formData, "price"),
+    source: value(formData, "source"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(receivedAt) ||
+      (parsed.data.price !== undefined && parsed.data.price < 0)) {
+    return invalid("Enter an input, quantity and valid receipt details.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).subsidyReceipt.create({
+      data: {
+        farmId: context.farm.id,
+        input: parsed.data.input,
+        quantity: parsed.data.quantity,
+        unit: parsed.data.unit,
+        price: parsed.data.price,
+        currency: context.farm.currency,
+        receivedAt: optionalDate(receivedAt) ?? new Date(),
+        source: parsed.data.source,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Subsidised input receipt recorded.", success: true };
+}
+
 export async function updateTaskStatusAction(
   _previousState: FormState,
   formData: FormData,
@@ -662,7 +979,7 @@ export async function updateTaskStatusAction(
   });
   if (!parsed.success) return invalid("Choose a valid task status.");
 
-  const updated = await db.task.updateMany({
+  const updated = await tenantDb(context.farm.id, context.user.id).task.updateMany({
     where: { id: parsed.data.taskId, farmId: context.farm.id },
     data: {
       status: parsed.data.status,
@@ -696,7 +1013,7 @@ export async function createActivityLogAction(
   });
   if (!parsed.success || dateError(parsed.data.loggedAt ?? "")) return invalid("Write a daily note and check the date.");
   if (parsed.data.cycleId) {
-    const cycle = await db.cropCycle.findFirst({
+    const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
       where: { id: parsed.data.cycleId, farmId: context.farm.id },
       select: { id: true },
     });
@@ -704,7 +1021,7 @@ export async function createActivityLogAction(
   }
 
   try {
-    await db.activityLog.create({
+    await tenantDb(context.farm.id, context.user.id).activityLog.create({
       data: {
         farmId: context.farm.id,
         cycleId: parsed.data.cycleId || null,
@@ -743,7 +1060,7 @@ export async function createWorkerAction(
   }
 
   try {
-    await db.worker.create({
+    await tenantDb(context.farm.id, context.user.id).worker.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
@@ -776,6 +1093,11 @@ export async function createWorkEntryAction(
     endedAt: z.string().min(1),
     hourlyRate: optionalNumber,
     paid: z.enum(["yes", "no"]),
+    paymentMethod: z.preprocess(
+      (input) => (input === "" || input === undefined ? undefined : input),
+      z.nativeEnum(PaymentMethod).optional(),
+    ),
+    paymentReference: optionalText,
   }).safeParse({
     workerId: value(formData, "workerId"),
     cycleId: value(formData, "cycleId") || undefined,
@@ -784,6 +1106,8 @@ export async function createWorkEntryAction(
     endedAt,
     hourlyRate: value(formData, "hourlyRate"),
     paid: value(formData, "paid"),
+    paymentMethod: value(formData, "paymentMethod"),
+    paymentReference: value(formData, "paymentReference"),
   });
   if (
     !parsed.success ||
@@ -794,12 +1118,12 @@ export async function createWorkEntryAction(
     return invalid("Enter valid work times; the end time must be after the start.");
   }
   const [worker, cycle] = await Promise.all([
-    db.worker.findFirst({
+    tenantDb(context.farm.id, context.user.id).worker.findFirst({
       where: { id: parsed.data.workerId, farmId: context.farm.id, active: true },
       select: { id: true, hourlyRate: true },
     }),
     parsed.data.cycleId
-      ? db.cropCycle.findFirst({
+      ? tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
           where: { id: parsed.data.cycleId, farmId: context.farm.id },
           select: { id: true },
         })
@@ -807,6 +1131,12 @@ export async function createWorkEntryAction(
   ]);
   if (!worker) return invalid("Choose a worker from this farm.");
   if (parsed.data.cycleId && !cycle) return invalid("Choose a crop cycle from this farm.");
+  if (context.role !== FarmRole.OWNER && parsed.data.paid === "yes") {
+    return invalid("Only the farm owner can mark a worker payment as paid.");
+  }
+  if (parsed.data.paid === "yes" && !parsed.data.paymentMethod) {
+    return invalid("Choose how the worker was paid.");
+  }
   if (context.role !== FarmRole.OWNER && parsed.data.hourlyRate !== undefined) {
     return invalid("Farm managers record hours; only the owner sets wage rates.");
   }
@@ -821,7 +1151,7 @@ export async function createWorkEntryAction(
     3_600_000;
   const amount = new Prisma.Decimal(hours).mul(hourlyRate).toDecimalPlaces(2);
   try {
-    await db.workEntry.create({
+    await tenantDb(context.farm.id, context.user.id).workEntry.create({
       data: {
         farmId: context.farm.id,
         workerId: worker.id,
@@ -834,6 +1164,8 @@ export async function createWorkEntryAction(
         amount,
         currency: context.farm.currency,
         paid: parsed.data.paid === "yes",
+        paymentMethod: parsed.data.paid === "yes" ? parsed.data.paymentMethod : null,
+        paymentReference: parsed.data.paid === "yes" ? parsed.data.paymentReference : null,
       },
     });
   } catch (error) {
@@ -868,7 +1200,7 @@ export async function createExpenseAction(
   });
   if (!parsed.success || dateError(parsed.data.spentAt ?? "")) return invalid("Enter a valid expense and date.");
   if (parsed.data.cycleId) {
-    const cycle = await db.cropCycle.findFirst({
+    const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
       where: { id: parsed.data.cycleId, farmId: context.farm.id },
       select: { id: true },
     });
@@ -876,7 +1208,7 @@ export async function createExpenseAction(
   }
 
   try {
-    await db.expense.create({
+    await tenantDb(context.farm.id, context.user.id).expense.create({
       data: {
         farmId: context.farm.id,
         cycleId: parsed.data.cycleId || null,
@@ -922,7 +1254,7 @@ export async function createStockItemAction(
   }
 
   try {
-    await db.stockItem.create({
+    await tenantDb(context.farm.id, context.user.id).stockItem.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
@@ -960,7 +1292,7 @@ export async function createSupplierAction(
   if (!parsed.success) return invalid("Enter a supplier name.");
 
   try {
-    await db.supplier.create({
+    await tenantDb(context.farm.id, context.user.id).supplier.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
@@ -1030,24 +1362,24 @@ export async function createStockMovementAction(
     return invalid("Stock usage cost is calculated from recorded purchase prices.");
   }
   const [item, supplier, cycle, task] = await Promise.all([
-    db.stockItem.findFirst({
+    tenantDb(context.farm.id, context.user.id).stockItem.findFirst({
       where: { id: parsed.data.itemId, farmId: context.farm.id },
       select: { id: true, unit: true },
     }),
     parsed.data.supplierId
-      ? db.supplier.findFirst({
+      ? tenantDb(context.farm.id, context.user.id).supplier.findFirst({
           where: { id: parsed.data.supplierId, farmId: context.farm.id },
           select: { id: true },
         })
       : Promise.resolve(null),
     parsed.data.cycleId
-      ? db.cropCycle.findFirst({
+      ? tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
           where: { id: parsed.data.cycleId, farmId: context.farm.id },
           select: { id: true },
         })
       : Promise.resolve(null),
     parsed.data.taskId
-      ? db.task.findFirst({
+      ? tenantDb(context.farm.id, context.user.id).task.findFirst({
           where: { id: parsed.data.taskId, farmId: context.farm.id },
           select: { id: true },
         })
@@ -1062,7 +1394,7 @@ export async function createStockMovementAction(
   }
 
   try {
-    await db.$transaction(async (tx) => {
+    await tenantDb(context.farm.id, context.user.id).$transaction(async (tx) => {
       const movements = await tx.stockMovement.findMany({
         where: { farmId: context.farm.id, itemId: item.id },
         orderBy: [{ movedAt: "asc" }, { id: "asc" }],
@@ -1164,7 +1496,7 @@ export async function addFarmMemberAction(
   });
   if (!user) return invalid("That user must create an account before being added as a manager.");
   try {
-    await db.farmMember.create({
+    await tenantDb(context.farm.id, context.user.id).farmMember.create({
       data: { farmId: context.farm.id, userId: user.id, role: "MANAGER" },
     });
   } catch (error) {

@@ -4,7 +4,7 @@ import { ExpenseCategory, FarmRole, PlanScenario, Prisma } from "@prisma/client"
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { tenantDb } from "@/lib/tenant-db";
 import type { FormState } from "@/lib/form-state";
 
 const optionalNumber = z.preprocess(
@@ -116,14 +116,14 @@ export async function savePlanAction(
     });
   }
 
-  const cycle = await db.cropCycle.findFirst({
+  const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
     where: { id: parsed.data.cycleId, farmId: context.farm.id },
     select: { id: true },
   });
   if (!cycle) return invalid("Choose a crop cycle from this farm.");
 
   try {
-    await db.$transaction(async (tx) => {
+    await tenantDb(context.farm.id, context.user.id).$transaction(async (tx) => {
       const plan = await tx.cropPlan.upsert({
         where: {
           cycleId_scenario: {
@@ -212,7 +212,7 @@ export async function recordHarvestAction(
   if (!parsed.success || (parsed.data.lossQty !== undefined && parsed.data.lossQty < 0)) {
     return invalid("Enter a valid harvested quantity and loss.");
   }
-  const cycle = await db.cropCycle.findFirst({
+  const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
     where: { id: parsed.data.cycleId, farmId: context.farm.id },
     select: { id: true, yieldUnit: true },
   });
@@ -224,7 +224,7 @@ export async function recordHarvestAction(
   if (Number.isNaN(date.getTime())) return invalid("Enter a valid harvest date.");
 
   try {
-    await db.$transaction(async (tx) => {
+    await tenantDb(context.farm.id, context.user.id).$transaction(async (tx) => {
       await tx.harvest.create({
         data: {
           farmId: context.farm.id,
@@ -281,7 +281,7 @@ export async function recordSaleAction(
     soldAt,
   });
   if (!parsed.success) return invalid("Enter a valid sold quantity and price.");
-  const cycle = await db.cropCycle.findFirst({
+  const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
     where: { id: parsed.data.cycleId, farmId: context.farm.id },
     select: { id: true, yieldUnit: true },
   });
@@ -293,7 +293,7 @@ export async function recordSaleAction(
   if (Number.isNaN(date.getTime())) return invalid("Enter a valid sale date.");
 
   try {
-    await db.sale.create({
+    await tenantDb(context.farm.id, context.user.id).sale.create({
       data: {
         farmId: context.farm.id,
         cycleId: cycle.id,

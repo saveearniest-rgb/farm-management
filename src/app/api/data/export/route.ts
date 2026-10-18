@@ -1,7 +1,7 @@
 import { DataRequestType, DataRequestStatus, FarmRole, Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getAppContext } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { tenantDb } from "@/lib/tenant-db";
 
 export async function GET() {
   const context = await getAppContext();
@@ -11,6 +11,7 @@ export async function GET() {
   if (context.role !== FarmRole.OWNER) {
     return NextResponse.json({ error: "Only a farm owner can export farm data." }, { status: 403 });
   }
+  const db = tenantDb(context.farm.id, context.user.id);
 
   const request = await db.dataRequest.findFirst({
     where: {
@@ -45,6 +46,7 @@ export async function GET() {
     workers,
     workEntries,
     expenses,
+    expenseAllocations,
     stockItems,
     suppliers,
     stockMovements,
@@ -53,6 +55,15 @@ export async function GET() {
     sales,
     consents,
     dataRequests,
+    tenureDisputes,
+    attachments,
+    weatherLogs,
+    scoutingLogs,
+    sprayRecords,
+    cycleStages,
+    subsidies,
+    auditLog,
+    invitations,
   ] = await Promise.all([
     db.farm.findUnique({ where: { id: farmId }, select: { id: true, name: true, region: true, district: true, currency: true, createdAt: true } }),
     db.farmMember.findMany({ where: { farmId }, select: { role: true, createdAt: true, user: { select: { id: true, name: true, email: true } } } }),
@@ -68,14 +79,35 @@ export async function GET() {
     db.worker.findMany({ where: { farmId } }),
     db.workEntry.findMany({ where: { farmId } }),
     db.expense.findMany({ where: { farmId } }),
+    db.expenseAllocation.findMany({ where: { farmId } }),
     db.stockItem.findMany({ where: { farmId } }),
     db.supplier.findMany({ where: { farmId } }),
     db.stockMovement.findMany({ where: { farmId } }),
     db.cropPlan.findMany({ where: { farmId }, include: { lines: true } }),
     db.harvest.findMany({ where: { farmId } }),
     db.sale.findMany({ where: { farmId } }),
-    db.consentRecord.findMany({ where: { farmId, userId: context.user.id } }),
-    db.dataRequest.findMany({ where: { farmId, userId: context.user.id } }),
+    db.consentRecord.findMany({ where: { farmId } }),
+    db.dataRequest.findMany({ where: { farmId } }),
+    db.tenureDispute.findMany({ where: { farmId } }),
+    db.fileAttachment.findMany({ where: { farmId } }),
+    db.weatherLog.findMany({ where: { farmId } }),
+    db.scoutingLog.findMany({ where: { farmId } }),
+    db.sprayRecord.findMany({ where: { farmId } }),
+    db.cropCycleStage.findMany({ where: { farmId } }),
+    db.subsidyReceipt.findMany({ where: { farmId } }),
+    db.auditLog.findMany({ where: { farmId } }),
+    db.farmInvitation.findMany({
+      where: { farmId },
+      select: {
+        id: true,
+        farmId: true,
+        invitedEmail: true,
+        createdById: true,
+        expiresAt: true,
+        acceptedAt: true,
+        createdAt: true,
+      },
+    }),
   ]);
 
   const exportData = {
@@ -94,6 +126,7 @@ export async function GET() {
     workers,
     workEntries,
     expenses,
+    expenseAllocations,
     stockItems,
     suppliers,
     stockMovements,
@@ -102,6 +135,15 @@ export async function GET() {
     sales,
     consents,
     dataRequests,
+    tenureDisputes,
+    attachments,
+    weatherLogs,
+    scoutingLogs,
+    sprayRecords,
+    cycleStages,
+    subsidies,
+    auditLog,
+    invitations,
   };
   const body = JSON.stringify(
     exportData,

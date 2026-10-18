@@ -1,6 +1,6 @@
 import "server-only";
 
-import { db } from "@/lib/db";
+import { tenantDb } from "@/lib/tenant-db";
 
 type Context = NonNullable<Awaited<ReturnType<typeof import("@/lib/auth").getAppContext>>>;
 
@@ -10,7 +10,9 @@ const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
 
 export async function getDashboardData(context: Context) {
   const farmId = context.farm.id;
+  const db = tenantDb(farmId, context.user.id);
   const isOwner = context.role === "OWNER";
+  const lastSevenDays = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const [
     holdings,
     plots,
@@ -20,6 +22,7 @@ export async function getDashboardData(context: Context) {
     rawLogs,
     rawWorkers,
     rawWorkEntries,
+    rawWeeklyWorkEntries,
     rawExpenses,
     rawStockItems,
     rawStockMovements,
@@ -27,9 +30,15 @@ export async function getDashboardData(context: Context) {
     members,
     consents,
     dataRequests,
+    tenureDisputes,
+    rawWeatherLogs,
+    rawScoutingLogs,
+    rawSprayRecords,
+    auditEntries,
+    rawSubsidies,
   ] = await Promise.all([
     db.landHolding.findMany({
-      where: { farmId },
+      where: { farmId, archivedAt: null },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -41,15 +50,16 @@ export async function getDashboardData(context: Context) {
         leaseEnd: true,
         ownerName: true,
         notes: true,
+        archivedAt: true,
       },
     }),
     db.plot.findMany({
-      where: { farmId },
+      where: { farmId, archivedAt: null },
       orderBy: { createdAt: "desc" },
       include: { holding: { select: { name: true, owned: true } } },
     }),
     db.cropType.findMany({
-      where: { farmId },
+      where: { farmId, archivedAt: null },
       orderBy: { name: "asc" },
       include: {
         stageTemplates: { orderBy: { sortOrder: "asc" } },
@@ -57,11 +67,18 @@ export async function getDashboardData(context: Context) {
       },
     }),
     db.cropCycle.findMany({
-      where: { farmId },
+      where: { farmId, archivedAt: null },
       orderBy: { createdAt: "desc" },
       include: {
         plot: { select: { name: true } },
-        cropType: { select: { name: true, mode: true, figureLabel: true } },
+        cropType: {
+          select: {
+            name: true,
+            mode: true,
+            figureLabel: true,
+            stageTemplates: { orderBy: { sortOrder: "asc" } },
+          },
+        },
         batches: {
           orderBy: { createdAt: "desc" },
           include: {
@@ -79,7 +96,7 @@ export async function getDashboardData(context: Context) {
       },
     }),
     db.task.findMany({
-      where: { farmId },
+      where: { farmId, archivedAt: null },
       orderBy: [{ status: "asc" }, { dueAt: "asc" }],
       include: { cycle: { include: { cropType: { select: { name: true } }, plot: { select: { name: true } } } } },
     }),
@@ -98,6 +115,11 @@ export async function getDashboardData(context: Context) {
       where: { farmId },
       orderBy: { startedAt: "desc" },
       take: 100,
+      include: { worker: { select: { name: true } }, cycle: { include: { cropType: { select: { name: true } } } } },
+    }),
+    db.workEntry.findMany({
+      where: { farmId, startedAt: { gte: lastSevenDays } },
+      orderBy: { startedAt: "desc" },
       include: { worker: { select: { name: true } }, cycle: { include: { cropType: { select: { name: true } } } } },
     }),
     isOwner
@@ -146,6 +168,61 @@ export async function getDashboardData(context: Context) {
       orderBy: { requestedAt: "desc" },
       select: { id: true, type: true, status: true, requestedAt: true, completedAt: true },
     }),
+    db.tenureDispute.findMany({
+      where: { farmId },
+      orderBy: { occurredAt: "desc" },
+      include: {
+        plot: { select: { name: true } },
+        holding: { select: { name: true } },
+      },
+    }),
+    db.weatherLog.findMany({
+      where: { farmId },
+      orderBy: { observedAt: "desc" },
+      take: 40,
+      include: {
+        plot: { select: { name: true } },
+        cycle: { include: { cropType: { select: { name: true } } } },
+      },
+    }),
+    db.scoutingLog.findMany({
+      where: { farmId },
+      orderBy: { observedAt: "desc" },
+      take: 40,
+      include: {
+        plot: { select: { name: true } },
+        cycle: { include: { cropType: { select: { name: true } } } },
+      },
+    }),
+    db.sprayRecord.findMany({
+      where: { farmId },
+      orderBy: { appliedAt: "desc" },
+      take: 40,
+      include: {
+        plot: { select: { name: true } },
+        cycle: {
+          include: {
+            cropType: { select: { name: true, cycleLengthDays: true } },
+            harvests: { select: { harvestedAt: true } },
+          },
+        },
+      },
+    }),
+    isOwner
+      ? db.auditLog.findMany({
+          where: { farmId },
+          orderBy: { occurredAt: "desc" },
+          take: 100,
+          include: { actor: { select: { name: true, email: true } } },
+        })
+      : Promise.resolve([]),
+    isOwner
+      ? db.subsidyReceipt.findMany({
+          where: { farmId },
+          orderBy: { receivedAt: "desc" },
+          take: 50,
+        })
+      : Promise.resolve([]),
   ]);
 
   const mapWorkEntry = (entry: (typeof rawWorkEntries)[number]) => ({
@@ -161,6 +238,8 @@ export async function getDashboardData(context: Context) {
     hourlyRate: isOwner ? numeric(entry.hourlyRate) : null,
     currency: entry.currency,
     paid: entry.paid,
+    paymentMethod: isOwner ? entry.paymentMethod : null,
+    paymentReference: isOwner ? entry.paymentReference : null,
   });
 
   return {
@@ -182,6 +261,7 @@ export async function getDashboardData(context: Context) {
       leaseEnd: iso(holding.leaseEnd),
       ownerName: holding.ownerName,
       notes: holding.notes,
+      archivedAt: iso(holding.archivedAt),
     })),
     plots: plots.map((plot) => ({
       id: plot.id,
@@ -198,6 +278,7 @@ export async function getDashboardData(context: Context) {
       documentStatus: plot.documentStatus,
       renewalDate: iso(plot.renewalDate),
       notes: plot.notes,
+      archivedAt: iso(plot.archivedAt),
     })),
     cropTypes: cropTypes.map((crop) => ({
       id: crop.id,
@@ -238,6 +319,16 @@ export async function getDashboardData(context: Context) {
       areaValue: numeric(cycle.areaValue) ?? 0,
       areaUnit: cycle.areaUnit,
       plantingAt: iso(cycle.plantingAt),
+      expectedHarvestAt: iso(cycle.expectedHarvestAt),
+      stageTimeline: cycle.cropType.stageTemplates.map((stage) => ({
+        id: stage.id,
+        nameEn: stage.nameEn,
+        nameSw: stage.nameSw,
+        dayOffset: stage.dayOffset,
+        expectedAt: cycle.plantingAt && stage.dayOffset !== null
+          ? iso(new Date(cycle.plantingAt.getTime() + stage.dayOffset * 86_400_000))
+          : null,
+      })),
       status: cycle.status,
       expectedYield: numeric(cycle.expectedYield),
       actualYield: numeric(cycle.actualYield),
@@ -344,6 +435,7 @@ export async function getDashboardData(context: Context) {
       currency: "currency" in worker ? worker.currency : context.farm.currency,
     })),
     workEntries: rawWorkEntries.map(mapWorkEntry),
+    weeklyWorkEntries: rawWeeklyWorkEntries.map(mapWorkEntry),
     expenses: rawExpenses.map((expense) => ({
       id: expense.id,
       category: expense.category,
@@ -401,6 +493,79 @@ export async function getDashboardData(context: Context) {
       ...request,
       requestedAt: iso(request.requestedAt),
       completedAt: iso(request.completedAt),
+    })),
+    tenureDisputes: tenureDisputes.map((dispute) => ({
+      id: dispute.id,
+      subject: dispute.plot?.name ?? dispute.holding?.name ?? "",
+      occurredAt: iso(dispute.occurredAt),
+      description: dispute.description,
+      status: dispute.status,
+      resolution: dispute.resolution,
+    })),
+    weatherLogs: rawWeatherLogs.map((log) => ({
+      id: log.id,
+      plotName: log.plot.name,
+      cropName: log.cycle?.cropType.name ?? null,
+      observedAt: iso(log.observedAt),
+      rainfallMm: numeric(log.rainfallMm),
+      temperatureC: numeric(log.temperatureC),
+      notes: log.notes,
+    })),
+    scoutingLogs: rawScoutingLogs.map((log) => ({
+      id: log.id,
+      plotName: log.plot.name,
+      cropName: log.cycle?.cropType.name ?? null,
+      observedAt: iso(log.observedAt),
+      issue: log.issue,
+      severity: log.severity,
+      notes: log.notes,
+    })),
+    sprayRecords: rawSprayRecords.map((record) => {
+      const intervalEnd = record.preHarvestIntervalDays === null
+        ? null
+        : new Date(record.appliedAt.getTime() + record.preHarvestIntervalDays * 86_400_000);
+      const expectedHarvest = record.cycle?.expectedHarvestAt ??
+        (record.cycle?.plantingAt && record.cycle.cropType.cycleLengthDays
+          ? new Date(record.cycle.plantingAt.getTime() + record.cycle.cropType.cycleLengthDays * 86_400_000)
+          : null);
+      const harvestDates = [
+        ...record.cycle?.harvests.map((harvest) => harvest.harvestedAt) ?? [],
+        ...(expectedHarvest ? [expectedHarvest] : []),
+      ];
+      return {
+        id: record.id,
+        plotName: record.plot.name,
+        cropName: record.cycle?.cropType.name ?? null,
+        product: record.product,
+        activeIngredient: record.activeIngredient,
+        batch: record.batch,
+        dose: record.dose,
+        appliedAt: iso(record.appliedAt),
+        preHarvestIntervalDays: record.preHarvestIntervalDays,
+        warning: intervalEnd !== null && harvestDates.some(
+          (harvestAt) => harvestAt >= record.appliedAt && harvestAt <= intervalEnd,
+        ),
+        notes: record.notes,
+      };
+    }),
+    auditLog: auditEntries.map((entry) => ({
+      id: entry.id,
+      actorName: entry.actor?.name ?? entry.actor?.email ?? "Unknown user",
+      action: entry.action,
+      entity: entry.entity,
+      recordId: entry.recordId,
+      occurredAt: iso(entry.occurredAt),
+    })),
+    subsidies: rawSubsidies.map((receipt) => ({
+      id: receipt.id,
+      input: receipt.input,
+      quantity: numeric(receipt.quantity) ?? 0,
+      unit: receipt.unit,
+      price: numeric(receipt.price),
+      currency: receipt.currency,
+      receivedAt: iso(receipt.receivedAt),
+      source: receipt.source,
+      notes: receipt.notes,
     })),
   };
 }

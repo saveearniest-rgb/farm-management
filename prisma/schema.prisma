@@ -93,6 +93,18 @@ enum DataRequestStatus {
   REJECTED
 }
 
+enum PaymentMethod {
+  CASH
+  BANK
+  MOBILE_MONEY
+}
+
+enum ScoutingSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model User {
   id           String       @id @default(cuid())
   email        String       @unique
@@ -101,23 +113,12 @@ model User {
   locale       String       @default("en")
   createdAt    DateTime     @default(now())
   memberships  FarmMember[]
-  sessions     Session[]
   workEntries  WorkEntry[]
   activityLogs ActivityLog[]
   consents     ConsentRecord[]
   dataRequests DataRequest[]
-}
-
-model Session {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
-  userId    String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, expiresAt])
+  auditLogs    AuditLog[]    @relation("AuditActor")
+  invitations  FarmInvitation[] @relation("InvitationCreator")
 }
 
 model Farm {
@@ -126,6 +127,9 @@ model Farm {
   region    String?
   district  String?
   currency  String   @default("TZS")
+  areaUnit  String   @default("acre")
+  timezone  String   @default("Africa/Dar_es_Salaam")
+  nationalFarmerId String?
   createdAt DateTime @default(now())
 
   members        FarmMember[]
@@ -142,6 +146,14 @@ model Farm {
   stockMovements StockMovement[]
   dataRequests   DataRequest[]
   consents       ConsentRecord[]
+  auditLogs      AuditLog[]
+  invitations    FarmInvitation[]
+  disputes       TenureDispute[]
+  attachments    FileAttachment[]
+  weatherLogs    WeatherLog[]
+  scoutingLogs   ScoutingLog[]
+  sprayRecords   SprayRecord[]
+  subsidies      SubsidyReceipt[]
 }
 
 model FarmMember {
@@ -169,10 +181,13 @@ model LandHolding {
   leaseEnd       DateTime?
   ownerName      String?
   notes          String?
+  archivedAt     DateTime?
   createdAt      DateTime       @default(now())
 
   farm  Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  plots Plot[]
+  plots       Plot[]
+  disputes    TenureDispute[]
+  attachments FileAttachment[]
 }
 
 model Plot {
@@ -190,11 +205,19 @@ model Plot {
   documentStatus DocumentStatus @default(NONE)
   renewalDate    DateTime?
   notes          String?
+  archivedAt     DateTime?
   createdAt      DateTime       @default(now())
 
   farm     Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
   holding  LandHolding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
-  cycles   CropCycle[]
+  cycles      CropCycle[]
+  expenses    Expense[]
+  disputes    TenureDispute[]
+  attachments FileAttachment[]
+  allocations ExpenseAllocation[]
+  weatherLogs WeatherLog[]
+  scoutingLogs ScoutingLog[]
+  sprayRecords SprayRecord[]
 }
 
 model CropType {
@@ -209,12 +232,16 @@ model CropType {
   yieldPerPlant      Decimal?   @db.Decimal(12, 4)
   yieldUnit          String     @default("kg")
   figureLabel        FigureLabel @default(PLACEHOLDER_BENCHMARK)
+  sourceDate         DateTime?
+  sourceNote         String?
+  archivedAt         DateTime?
   createdAt          DateTime   @default(now())
 
   farm           Farm            @relation(fields: [farmId], references: [id], onDelete: Cascade)
   stageTemplates StageTemplate[]
   careTemplates  CareTemplate[]
   cycles         CropCycle[]
+  attachments    FileAttachment[]
 }
 
 model StageTemplate {
@@ -252,6 +279,10 @@ model CropCycle {
   areaValue      Decimal     @db.Decimal(12, 4)
   areaUnit       String      @default("acre")
   plantingAt     DateTime?
+  actualStartAt  DateTime?
+  expectedHarvestAt DateTime?
+  actualHarvestAt DateTime?
+  archivedAt     DateTime?
   status         CycleStatus @default(PLANNED)
   expectedYield  Decimal?    @db.Decimal(14, 4)
   actualYield    Decimal?    @db.Decimal(14, 4)
@@ -267,10 +298,16 @@ model CropCycle {
   logs     ActivityLog[]
   work     WorkEntry[]
   expenses Expense[]
+  allocations ExpenseAllocation[]
   plans    CropPlan[]
   harvests Harvest[]
   sales    Sale[]
   stockMovements StockMovement[]
+  stageHistory   CropCycleStage[]
+  scoutingLogs   ScoutingLog[]
+  sprayRecords   SprayRecord[]
+  weatherLogs    WeatherLog[]
+  attachments    FileAttachment[]
 
   @@index([farmId, status])
   @@index([plotId, cropTypeId])
@@ -305,6 +342,7 @@ model NurseryCheck {
   surviving   Int?
   condition   String?
   notes       String?
+  offlineId   String?  @unique
 
   batch NurseryBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
 }
@@ -333,10 +371,12 @@ model Task {
   status      TaskStatus @default(PENDING)
   doneAt      DateTime?
   notes       String?
+  archivedAt  DateTime?
   createdAt   DateTime   @default(now())
 
   cycle CropCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
   stockMovements StockMovement[]
+  attachments FileAttachment[]
 
   @@index([farmId, dueAt, status])
   @@index([cycleId])
@@ -365,6 +405,7 @@ model Worker {
   hourlyRate Decimal? @db.Decimal(12, 2)
   currency  String   @default("TZS")
   active    Boolean  @default(true)
+  phone     String?
   createdAt DateTime @default(now())
 
   farm    Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
@@ -384,6 +425,8 @@ model WorkEntry {
   amount     Decimal  @db.Decimal(14, 2)
   currency   String   @default("TZS")
   paid       Boolean  @default(false)
+  paymentMethod PaymentMethod?
+  paymentReference String?
   createdAt  DateTime @default(now())
 
   worker Worker     @relation(fields: [workerId], references: [id], onDelete: Cascade)
@@ -397,6 +440,7 @@ model Expense {
   id         String          @id @default(cuid())
   farmId     String
   cycleId    String?
+  plotId     String?
   category   ExpenseCategory
   amount     Decimal         @db.Decimal(14, 2)
   currency   String          @default("TZS")
@@ -406,9 +450,28 @@ model Expense {
 
   farm  Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
   cycle CropCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  plot  Plot?      @relation(fields: [plotId], references: [id], onDelete: SetNull)
+  allocations ExpenseAllocation[]
 
   @@index([farmId, cycleId, category])
   @@index([spentAt])
+}
+
+model ExpenseAllocation {
+  id        String   @id @default(cuid())
+  farmId    String
+  expenseId String
+  cycleId   String?
+  plotId    String?
+  amount    Decimal  @db.Decimal(14, 2)
+  currency  String   @default("TZS")
+
+  expense Expense   @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  cycle   CropCycle? @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  plot    Plot?      @relation(fields: [plotId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, cycleId])
+  @@index([farmId, plotId])
 }
 
 model CropPlan {
@@ -546,6 +609,10 @@ model ConsentRecord {
   granted       Boolean
   recordedAt    DateTime @default(now())
   withdrawnAt   DateTime?
+  sharedWith    String?
+  scope         String?
+  expiresAt     DateTime?
+  retentionUntil DateTime?
 
   farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -567,4 +634,167 @@ model DataRequest {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([farmId, userId, status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  farmId      String
+  actorUserId String?
+  action      String
+  entity      String
+  recordId    String?
+  occurredAt  DateTime @default(now())
+
+  farm  Farm  @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, occurredAt])
+  @@index([actorUserId, occurredAt])
+}
+
+model FarmInvitation {
+  id             String   @id @default(cuid())
+  farmId         String
+  invitedEmail   String
+  tokenHash      String   @unique
+  createdById    String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  farm      Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  createdBy User @relation("InvitationCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([farmId, invitedEmail, expiresAt])
+}
+
+model TenureDispute {
+  id          String   @id @default(cuid())
+  farmId      String
+  holdingId   String?
+  plotId      String?
+  occurredAt  DateTime @default(now())
+  description String
+  status      String   @default("OPEN")
+  resolution  String?
+  createdAt   DateTime @default(now())
+
+  farm    Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  holding LandHolding? @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  plot    Plot?        @relation(fields: [plotId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, status, occurredAt])
+}
+
+model FileAttachment {
+  id              String   @id @default(cuid())
+  farmId          String
+  landHoldingId   String?
+  plotId          String?
+  cropTypeId      String?
+  cycleId         String?
+  taskId          String?
+  filename        String
+  storageKey      String   @unique
+  mimeType        String
+  sizeBytes       Int
+  createdById     String
+  createdAt       DateTime @default(now())
+
+  farm       Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  holding    LandHolding? @relation(fields: [landHoldingId], references: [id], onDelete: Cascade)
+  plot       Plot?        @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  cropType   CropType?    @relation(fields: [cropTypeId], references: [id], onDelete: Cascade)
+  cycle      CropCycle?   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  task       Task?        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, createdAt])
+}
+
+model WeatherLog {
+  id          String   @id @default(cuid())
+  farmId      String
+  plotId      String
+  cycleId     String?
+  observedAt  DateTime @default(now())
+  rainfallMm  Decimal? @db.Decimal(10, 2)
+  temperatureC Decimal? @db.Decimal(6, 2)
+  notes       String?
+
+  farm  Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  plot  Plot       @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  cycle CropCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, plotId, observedAt])
+}
+
+model ScoutingLog {
+  id          String           @id @default(cuid())
+  farmId      String
+  plotId      String
+  cycleId     String?
+  observedAt  DateTime         @default(now())
+  issue       String
+  severity    ScoutingSeverity
+  notes       String?
+
+  farm  Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  plot  Plot       @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  cycle CropCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, plotId, observedAt])
+}
+
+model SprayRecord {
+  id                   String   @id @default(cuid())
+  farmId               String
+  plotId               String
+  cycleId              String?
+  product              String
+  activeIngredient     String?
+  batch                String?
+  dose                 String?
+  appliedAt            DateTime @default(now())
+  preHarvestIntervalDays Int?
+  notes                String?
+
+  farm  Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  plot  Plot       @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  cycle CropCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, plotId, appliedAt])
+  @@index([cycleId, appliedAt])
+}
+
+model CropCycleStage {
+  id          String   @id @default(cuid())
+  farmId      String
+  cycleId     String
+  stageKey    String
+  nameEn      String
+  nameSw      String
+  startedAt   DateTime
+  expectedAt  DateTime?
+  completedAt DateTime?
+
+  cycle CropCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, cycleId, startedAt])
+}
+
+model SubsidyReceipt {
+  id        String   @id @default(cuid())
+  farmId    String
+  input     String
+  quantity  Decimal  @db.Decimal(14, 4)
+  unit      String
+  price     Decimal? @db.Decimal(14, 2)
+  currency  String   @default("TZS")
+  receivedAt DateTime @default(now())
+  source    String?
+  notes     String?
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, receivedAt])
 }

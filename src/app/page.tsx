@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import { AuthPanel } from "@/app/components/auth-panel";
 import { FarmDashboard } from "@/app/components/farm-dashboard";
 import { getAppContext } from "@/lib/auth";
@@ -13,6 +14,7 @@ export default function Home() {
 }
 
 async function HomeContent() {
+  await connection();
   const context = await getAppContext();
   if (!context) return <AuthPanel initialLocale="en" />;
 
