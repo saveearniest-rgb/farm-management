@@ -1,0 +1,408 @@
+import "server-only";
+
+import { db } from "@/lib/db";
+
+type Context = NonNullable<Awaited<ReturnType<typeof import("@/lib/auth").getAppContext>>>;
+
+const numeric = (value: { toNumber(): number } | null | undefined) =>
+  value?.toNumber() ?? null;
+const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
+
+export async function getDashboardData(context: Context) {
+  const farmId = context.farm.id;
+  const isOwner = context.role === "OWNER";
+  const [
+    holdings,
+    plots,
+    cropTypes,
+    rawCycles,
+    rawTasks,
+    rawLogs,
+    rawWorkers,
+    rawWorkEntries,
+    rawExpenses,
+    rawStockItems,
+    rawStockMovements,
+    suppliers,
+    members,
+    consents,
+    dataRequests,
+  ] = await Promise.all([
+    db.landHolding.findMany({
+      where: { farmId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        owned: true,
+        costOrRent: isOwner,
+        currency: true,
+        leaseStart: true,
+        leaseEnd: true,
+        ownerName: true,
+        notes: true,
+      },
+    }),
+    db.plot.findMany({
+      where: { farmId },
+      orderBy: { createdAt: "desc" },
+      include: { holding: { select: { name: true, owned: true } } },
+    }),
+    db.cropType.findMany({
+      where: { farmId },
+      orderBy: { name: "asc" },
+      include: {
+        stageTemplates: { orderBy: { sortOrder: "asc" } },
+        careTemplates: true,
+      },
+    }),
+    db.cropCycle.findMany({
+      where: { farmId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        plot: { select: { name: true } },
+        cropType: { select: { name: true, mode: true, figureLabel: true } },
+        batches: {
+          orderBy: { createdAt: "desc" },
+          include: {
+            checks: { orderBy: { checkedAt: "desc" } },
+            plants: { orderBy: { movedAt: "desc" } },
+          },
+        },
+        plans: { include: { lines: true } },
+        harvests: { orderBy: { harvestedAt: "desc" } },
+        sales: { orderBy: { soldAt: "desc" } },
+        stockMovements: {
+          where: { farmId, type: "USAGE" },
+          include: { item: { select: { category: true } } },
+        },
+      },
+    }),
+    db.task.findMany({
+      where: { farmId },
+      orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+      include: { cycle: { include: { cropType: { select: { name: true } }, plot: { select: { name: true } } } } },
+    }),
+    db.activityLog.findMany({
+      where: { farmId },
+      orderBy: { loggedAt: "desc" },
+      take: 40,
+      include: { cycle: { include: { cropType: { select: { name: true } } } } },
+    }),
+    db.worker.findMany({
+      where: { farmId, active: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, hourlyRate: true, currency: true, active: true },
+    }),
+    db.workEntry.findMany({
+      where: { farmId },
+      orderBy: { startedAt: "desc" },
+      take: 100,
+      include: { worker: { select: { name: true } }, cycle: { include: { cropType: { select: { name: true } } } } },
+    }),
+    isOwner
+      ? db.expense.findMany({
+          where: { farmId },
+          orderBy: { spentAt: "desc" },
+          take: 150,
+          include: { cycle: { include: { cropType: { select: { name: true } } } } },
+        })
+      : Promise.resolve([]),
+    db.stockItem.findMany({
+      where: { farmId },
+      orderBy: { name: "asc" },
+      include: { movements: { where: { farmId }, orderBy: { movedAt: "asc" } } },
+    }),
+    db.stockMovement.findMany({
+      where: { farmId },
+      orderBy: { movedAt: "desc" },
+      take: 100,
+      include: {
+        item: { select: { name: true, unit: true, category: true } },
+        supplier: { select: { name: true } },
+        cycle: { include: { cropType: { select: { name: true } } } },
+        task: { select: { titleEn: true, titleSw: true } },
+      },
+    }),
+    db.supplier.findMany({
+      where: { farmId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    isOwner
+      ? db.farmMember.findMany({
+          where: { farmId },
+          orderBy: { createdAt: "asc" },
+          include: { user: { select: { name: true, email: true } } },
+        })
+      : Promise.resolve([]),
+    db.consentRecord.findMany({
+      where: { farmId, userId: context.user.id },
+      orderBy: { recordedAt: "desc" },
+      select: { purpose: true, policyVersion: true, granted: true, recordedAt: true, withdrawnAt: true },
+    }),
+    db.dataRequest.findMany({
+      where: { farmId, userId: context.user.id },
+      orderBy: { requestedAt: "desc" },
+      select: { id: true, type: true, status: true, requestedAt: true, completedAt: true },
+    }),
+  ]);
+
+  const mapWorkEntry = (entry: (typeof rawWorkEntries)[number]) => ({
+    id: entry.id,
+    workerName: entry.worker.name,
+    taskLabel: entry.taskLabel,
+    cycleId: entry.cycleId,
+    cropName: entry.cycle?.cropType.name ?? null,
+    startedAt: iso(entry.startedAt),
+    endedAt: iso(entry.endedAt),
+    hours: Number(((entry.endedAt.getTime() - entry.startedAt.getTime()) / 3_600_000).toFixed(2)),
+    amount: isOwner ? numeric(entry.amount) : null,
+    hourlyRate: isOwner ? numeric(entry.hourlyRate) : null,
+    currency: entry.currency,
+    paid: entry.paid,
+  });
+
+  return {
+    generatedAt: Date.now(),
+    user: context.user,
+    farm: context.farm,
+    role: context.role,
+    memberships: context.memberships.map((member) => ({
+      farm: member.farm,
+      role: member.role,
+    })),
+    holdings: holdings.map((holding) => ({
+      id: holding.id,
+      name: holding.name,
+      owned: holding.owned,
+      costOrRent: numeric(holding.costOrRent),
+      currency: holding.currency,
+      leaseStart: iso(holding.leaseStart),
+      leaseEnd: iso(holding.leaseEnd),
+      ownerName: holding.ownerName,
+      notes: holding.notes,
+    })),
+    plots: plots.map((plot) => ({
+      id: plot.id,
+      holdingId: plot.holdingId,
+      holdingName: plot.holding.name,
+      name: plot.name,
+      areaValue: numeric(plot.areaValue) ?? 0,
+      areaUnit: plot.areaUnit,
+      soilType: plot.soilType,
+      waterSource: plot.waterSource,
+      gpsLat: numeric(plot.gpsLat),
+      gpsLng: numeric(plot.gpsLng),
+      tenureType: plot.tenureType,
+      documentStatus: plot.documentStatus,
+      renewalDate: iso(plot.renewalDate),
+      notes: plot.notes,
+    })),
+    cropTypes: cropTypes.map((crop) => ({
+      id: crop.id,
+      name: crop.name,
+      varietyDefault: crop.varietyDefault,
+      mode: crop.mode,
+      cycleLengthDays: crop.cycleLengthDays,
+      spacingNote: crop.spacingNote,
+      plantsPerAcre: numeric(crop.plantsPerAcre),
+      yieldPerPlant: numeric(crop.yieldPerPlant),
+      yieldUnit: crop.yieldUnit,
+      figureLabel: crop.figureLabel,
+      stageTemplates: crop.stageTemplates.map((stage) => ({
+        id: stage.id,
+        key: stage.key,
+        nameEn: stage.nameEn,
+        nameSw: stage.nameSw,
+        sortOrder: stage.sortOrder,
+        dayOffset: stage.dayOffset,
+      })),
+      careTemplates: crop.careTemplates.map((template) => ({
+        id: template.id,
+        taskType: template.taskType,
+        afterStageKey: template.afterStageKey,
+        intervalDays: template.intervalDays,
+        nameEn: template.nameEn,
+        nameSw: template.nameSw,
+      })),
+    })),
+    cycles: rawCycles.map((cycle) => ({
+      id: cycle.id,
+      plotId: cycle.plotId,
+      plotName: cycle.plot.name,
+      cropTypeId: cycle.cropTypeId,
+      cropName: cycle.cropType.name,
+      mode: cycle.cropType.mode,
+      variety: cycle.variety,
+      areaValue: numeric(cycle.areaValue) ?? 0,
+      areaUnit: cycle.areaUnit,
+      plantingAt: iso(cycle.plantingAt),
+      status: cycle.status,
+      expectedYield: numeric(cycle.expectedYield),
+      actualYield: numeric(cycle.actualYield),
+      yieldUnit: cycle.yieldUnit,
+      figureLabel: cycle.figureLabel,
+      batches: cycle.batches.map((batch) => ({
+        id: batch.id,
+        seedLot: batch.seedLot,
+        variety: batch.variety,
+        supplier: batch.supplier,
+        quantity: numeric(batch.quantity) ?? 0,
+        quantityUnit: batch.quantityUnit,
+        costAmount: isOwner ? numeric(batch.costAmount) : null,
+        sownAt: iso(batch.sownAt),
+        checks: batch.checks.map((check) => ({
+          checkedAt: iso(check.checkedAt),
+          germinated: check.germinated,
+          surviving: check.surviving,
+          condition: check.condition,
+          notes: check.notes,
+        })),
+        transplants: batch.plants.map((plant) => ({
+          movedAt: iso(plant.movedAt),
+          quantityMoved: plant.quantityMoved,
+          quantityDiscarded: plant.quantityDiscarded,
+          reason: plant.reason,
+        })),
+      })),
+      plans: cycle.plans.map((plan) => ({
+        id: plan.id,
+        scenario: plan.scenario,
+        areaAcres: numeric(plan.areaAcres) ?? 0,
+        seedGrams: numeric(plan.seedGrams),
+        seedsPerGram: numeric(plan.seedsPerGram),
+        germinationRate: numeric(plan.germinationRate),
+        survivalRate: numeric(plan.survivalRate),
+        plantsPerAcre: numeric(plan.plantsPerAcre),
+        yieldPerPlant: numeric(plan.yieldPerPlant),
+        yieldUnit: plan.yieldUnit,
+        farmgatePrice: numeric(plan.farmgatePrice),
+        harvestMonth: plan.harvestMonth,
+        currency: plan.currency,
+        figureLabel: plan.figureLabel,
+        notes: plan.notes,
+        lines: plan.lines.map((line) => ({
+          category: line.category,
+          amount: numeric(line.amount) ?? 0,
+          currency: line.currency,
+          timingMonth: line.timingMonth,
+          figureLabel: line.figureLabel,
+        })),
+      })),
+      harvests: cycle.harvests.map((harvest) => ({
+        id: harvest.id,
+        harvestedAt: iso(harvest.harvestedAt),
+        quantity: numeric(harvest.quantity) ?? 0,
+        unit: harvest.unit,
+        grade: harvest.grade,
+        lossQty: numeric(harvest.lossQty),
+        notes: harvest.notes,
+      })),
+      sales: cycle.sales.map((sale) => ({
+        id: sale.id,
+        soldAt: iso(sale.soldAt),
+        quantity: numeric(sale.quantity) ?? 0,
+        unit: sale.unit,
+        price: numeric(sale.price) ?? 0,
+        currency: sale.currency,
+        buyer: sale.buyer,
+      })),
+      stockUsage: cycle.stockMovements.map((movement) => ({
+        quantity: numeric(movement.quantity) ?? 0,
+        unit: movement.unit,
+        unitCost: isOwner ? numeric(movement.unitCost) : null,
+        category: movement.item.category,
+      })),
+    })),
+    tasks: rawTasks.map((task) => ({
+      id: task.id,
+      titleEn: task.titleEn,
+      titleSw: task.titleSw,
+      taskType: task.taskType,
+      dueAt: iso(task.dueAt),
+      status: task.status,
+      notes: task.notes,
+      cropName: task.cycle.cropType.name,
+      plotName: task.cycle.plot.name,
+      cycleId: task.cycleId,
+    })),
+    logs: rawLogs.map((log) => ({
+      id: log.id,
+      loggedAt: iso(log.loggedAt),
+      body: log.body,
+      weather: log.weather,
+      whoWorked: log.whoWorked,
+      cropName: log.cycle?.cropType.name ?? null,
+      synced: log.synced,
+    })),
+    workers: rawWorkers.map((worker) => ({
+      id: worker.id,
+      name: worker.name,
+      active: worker.active,
+      hourlyRate: "hourlyRate" in worker ? numeric(worker.hourlyRate) : null,
+      currency: "currency" in worker ? worker.currency : context.farm.currency,
+    })),
+    workEntries: rawWorkEntries.map(mapWorkEntry),
+    expenses: rawExpenses.map((expense) => ({
+      id: expense.id,
+      category: expense.category,
+      amount: numeric(expense.amount) ?? 0,
+      currency: expense.currency,
+      spentAt: iso(expense.spentAt),
+      notes: expense.notes,
+      cycleId: expense.cycleId,
+      cropName: expense.cycle?.cropType.name ?? null,
+    })),
+    stockItems: rawStockItems.map((item) => {
+      const balance = item.movements.reduce((quantity, movement) => {
+        const amount = numeric(movement.quantity) ?? 0;
+        if (movement.type === "PURCHASE") return quantity + amount;
+        if (movement.type === "USAGE") return quantity - amount;
+        return quantity + amount;
+      }, 0);
+      return {
+        id: item.id,
+        name: item.name,
+        category: item.category,
+        unit: item.unit,
+        balance,
+        lowStockThreshold: numeric(item.lowStockThreshold),
+      };
+    }),
+    stockMovements: rawStockMovements.map((movement) => ({
+      id: movement.id,
+      type: movement.type,
+      quantity: numeric(movement.quantity) ?? 0,
+      unit: movement.unit,
+      unitCost: isOwner ? numeric(movement.unitCost) : null,
+      currency: movement.currency,
+      lotReference: movement.lotReference,
+      movedAt: iso(movement.movedAt),
+      itemName: movement.item.name,
+      category: movement.item.category,
+      supplierName: movement.supplier?.name ?? null,
+      cropName: movement.cycle?.cropType.name ?? null,
+      taskName: movement.task?.titleEn ?? null,
+    })),
+    suppliers: suppliers,
+    members: members.map((member) => ({
+      id: member.id,
+      name: member.user.name,
+      email: member.user.email,
+      role: member.role,
+    })),
+    consents: consents.map((consent) => ({
+      ...consent,
+      recordedAt: iso(consent.recordedAt),
+      withdrawnAt: iso(consent.withdrawnAt),
+    })),
+    dataRequests: dataRequests.map((request) => ({
+      ...request,
+      requestedAt: iso(request.requestedAt),
+      completedAt: iso(request.completedAt),
+    })),
+  };
+}
+
+export type DashboardData = Awaited<ReturnType<typeof getDashboardData>>;
