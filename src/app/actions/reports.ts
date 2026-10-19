@@ -1,6 +1,6 @@
 "use server";
 
-import { ExpenseCategory, FarmRole, PlanScenario, Prisma } from "@prisma/client";
+import { ExpenseCategory, FarmRole, FigureLabel, PlanScenario, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
@@ -53,6 +53,7 @@ export async function savePlanAction(
     farmgatePrice: optionalNumber,
     harvestMonth: optionalNumber,
     costLines: z.string().max(5000),
+    figureLabel: z.nativeEnum(FigureLabel),
     notes: z.string().trim().max(2000).optional(),
   }).safeParse({
     cycleId: value(formData, "cycleId"),
@@ -68,6 +69,7 @@ export async function savePlanAction(
     farmgatePrice: value(formData, "farmgatePrice"),
     harvestMonth: value(formData, "harvestMonth"),
     costLines: value(formData, "costLines"),
+    figureLabel: value(formData, "figureLabel") || FigureLabel.PLACEHOLDER_BENCHMARK,
     notes: value(formData, "notes"),
   });
   if (!parsed.success) {
@@ -93,26 +95,28 @@ export async function savePlanAction(
     amount: number;
     currency: string;
     timingMonth: number | null;
-    figureLabel: "PLACEHOLDER_BENCHMARK";
+    figureLabel: FigureLabel;
   }> = [];
   for (const line of parsed.data.costLines.split(/\r?\n/).filter(Boolean)) {
-    const [category, amountText, monthText] = line.split("|").map((part) => part.trim());
+    const [category, amountText, monthText, labelText] = line.split("|").map((part) => part.trim());
     const amount = Number(amountText);
     const month = monthText ? Number(monthText) : null;
+    const figureLabel = labelText || FigureLabel.PLACEHOLDER_BENCHMARK;
     if (
       !Object.values(ExpenseCategory).includes(category as ExpenseCategory) ||
       !Number.isFinite(amount) ||
       amount < 0 ||
-      (month !== null && (!Number.isInteger(month) || month < 1 || month > 12))
+      (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) ||
+      !Object.values(FigureLabel).includes(figureLabel as FigureLabel)
     ) {
-      return invalid("Check plan costs: use CATEGORY | amount | month (1–12).");
+      return invalid("Check plan costs: use CATEGORY | amount or rate | month (1–12) | source label.");
     }
     lines.push({
       category: category as ExpenseCategory,
       amount,
       currency: context.farm.currency,
       timingMonth: month,
-      figureLabel: "PLACEHOLDER_BENCHMARK",
+      figureLabel: figureLabel as FigureLabel,
     });
   }
 
@@ -146,7 +150,7 @@ export async function savePlanAction(
           farmgatePrice: parsed.data.farmgatePrice,
           harvestMonth: parsed.data.harvestMonth,
           currency: context.farm.currency,
-          figureLabel: "PLACEHOLDER_BENCHMARK",
+          figureLabel: parsed.data.figureLabel,
           notes: parsed.data.notes || null,
         },
         update: {
@@ -161,7 +165,7 @@ export async function savePlanAction(
           farmgatePrice: parsed.data.farmgatePrice,
           harvestMonth: parsed.data.harvestMonth,
           currency: context.farm.currency,
-          figureLabel: "PLACEHOLDER_BENCHMARK",
+          figureLabel: parsed.data.figureLabel,
           notes: parsed.data.notes || null,
         },
         select: { id: true },
@@ -174,6 +178,64 @@ export async function savePlanAction(
           data: lines.map((line) => ({ ...line, planId: plan.id, farmId: context.farm.id })),
         });
       }
+      if (parsed.data.scenario === PlanScenario.EXPECTED) {
+        const baseFarmgatePrice = parsed.data.farmgatePrice ?? null;
+        const baseYieldPerPlant = parsed.data.yieldPerPlant ?? null;
+        const downsideScenarios = [
+          {
+            scenario: PlanScenario.LOW_PRICE,
+            farmgatePrice: baseFarmgatePrice === null ? null : baseFarmgatePrice * 0.7,
+            yieldPerPlant: baseYieldPerPlant,
+          },
+          {
+            scenario: PlanScenario.LOW_YIELD,
+            farmgatePrice: baseFarmgatePrice,
+            yieldPerPlant: baseYieldPerPlant === null ? null : baseYieldPerPlant * 0.6,
+          },
+        ];
+        for (const downside of downsideScenarios) {
+          const existing = await tx.cropPlan.findUnique({
+            where: {
+              cycleId_scenario: {
+                cycleId: parsed.data.cycleId,
+                scenario: downside.scenario,
+              },
+            },
+            select: { id: true },
+          });
+          if (existing) continue;
+          const downsidePlan = await tx.cropPlan.create({
+            data: {
+              farmId: context.farm.id,
+              cycleId: parsed.data.cycleId,
+              scenario: downside.scenario,
+              areaAcres: parsed.data.areaAcres,
+              seedGrams: parsed.data.seedGrams ?? null,
+              seedsPerGram: parsed.data.seedsPerGram ?? null,
+              germinationRate: parsed.data.germinationRate ?? null,
+              survivalRate: parsed.data.survivalRate ?? null,
+              plantsPerAcre: parsed.data.plantsPerAcre ?? null,
+              yieldPerPlant: downside.yieldPerPlant,
+              yieldUnit: parsed.data.yieldUnit,
+              farmgatePrice: downside.farmgatePrice,
+              harvestMonth: parsed.data.harvestMonth ?? null,
+              currency: context.farm.currency,
+              figureLabel: parsed.data.figureLabel,
+              notes: "Automatically generated downside scenario; review assumptions before use.",
+            },
+            select: { id: true },
+          });
+          if (lines.length > 0) {
+            await tx.cropPlanLine.createMany({
+              data: lines.map((line) => ({
+                ...line,
+                planId: downsidePlan.id,
+                farmId: context.farm.id,
+              })),
+            });
+          }
+        }
+      }
     });
   } catch (error) {
     const setupMessage = databaseSetupMessage(error);
@@ -181,7 +243,12 @@ export async function savePlanAction(
     throw error;
   }
   revalidatePath("/");
-  return { message: "Plan assumptions saved. All figures are marked as placeholders until verified.", success: true };
+  return {
+    message: parsed.data.scenario === PlanScenario.EXPECTED
+      ? "Plan assumptions saved. Missing low-price and low-yield scenarios were created for review."
+      : "Plan assumptions saved with their source labels. Verify each figure before use.",
+    success: true,
+  };
 }
 
 export async function recordHarvestAction(

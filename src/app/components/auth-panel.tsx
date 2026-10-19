@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import { ArrowRight, Sprout } from "lucide-react";
 import { loginAction, signupAction } from "@/app/actions/auth";
 import { translate, type Locale } from "@/lib/i18n";
+import { ThemeToggle } from "./theme-toggle";
 
 export function AuthPanel({
   initialLocale,
@@ -45,6 +46,7 @@ export function AuthPanel({
 
         <section className="auth-card">
           <div className="auth-locale">
+            <ThemeToggle locale={locale} />
             <label htmlFor="auth-language">{t("language")}</label>
             <select
               id="auth-language"
@@ -78,6 +80,16 @@ export function AuthPanel({
               <label className="field">
                 <span>{t("farmName")}</span>
                 <input name="farmName" autoComplete="organization" minLength={2} required />
+              </label>
+              <label className="field">
+                <span>{locale === "sw" ? "Ukubwa wa shamba" : "Farm size (optional)"}</span>
+                <div className="input-with-unit">
+                  <input name="totalAreaValue" type="number" min="0.0001" step="any" />
+                  <select aria-label={locale === "sw" ? "Kipimo cha ukubwa wa shamba" : "Farm size unit"} name="totalAreaUnit" defaultValue="acre">
+                    <option value="acre">{locale === "sw" ? "Ekari" : "Acres"}</option>
+                    <option value="hectare">{locale === "sw" ? "Hekta" : "Hectares"}</option>
+                  </select>
+                </div>
               </label>
               <label className="field">
                 <span>{t("region")}</span>

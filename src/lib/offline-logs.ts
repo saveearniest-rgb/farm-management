@@ -1,5 +1,6 @@
 export type PendingLog = {
   id: string;
+  farmId?: string;
   body: string;
   weather: string;
   whoWorked: string;
@@ -12,9 +13,15 @@ const STORE_NAME = "pending-activity-logs";
 
 function openStore() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1);
+    const request = indexedDB.open(DATABASE_NAME, 2);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      const database = request.result;
+      if (!database.objectStoreNames.contains(STORE_NAME)) {
+        database.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+      if (!database.objectStoreNames.contains("pending-actions")) {
+        database.createObjectStore("pending-actions", { keyPath: "id" });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("Could not open offline log storage."));

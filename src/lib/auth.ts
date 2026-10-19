@@ -31,6 +31,8 @@ export async function getAppContext() {
               district: true,
               currency: true,
               areaUnit: true,
+              totalAreaValue: true,
+              totalAreaUnit: true,
               timezone: true,
               nationalFarmerId: true,
             },
@@ -47,6 +49,11 @@ export async function getAppContext() {
     user.memberships[0];
   if (!membership) return null;
 
+  const farmData = {
+    ...membership.farm,
+    totalAreaValue: membership.farm.totalAreaValue?.toNumber() ?? null,
+  };
+
   return {
     user: {
       id: user.id,
@@ -54,9 +61,15 @@ export async function getAppContext() {
       email: user.email,
       locale: user.locale,
     },
-    farm: membership.farm,
+    farm: farmData,
     role: membership.role,
-    memberships: user.memberships,
+    memberships: user.memberships.map((item) => ({
+      ...item,
+      farm: {
+        ...item.farm,
+        totalAreaValue: item.farm.totalAreaValue?.toNumber() ?? null,
+      },
+    })),
   };
 }
 

@@ -1,11 +1,12 @@
 "use server";
 
-import { CropMode, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { tenantDb } from "@/lib/tenant-db";
+import { parseExpenseAllocations } from "@/lib/expense-allocations";
 import type { FormState } from "@/lib/form-state";
 
 const optionalNumber = z.preprocess(
@@ -50,6 +51,178 @@ function message(error: unknown) {
 
 function invalid(messageText: string): FormState {
   return { message: messageText };
+}
+
+function parseCsvRows(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === "," && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+      row.push(cell);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+
+  if (quoted) return null;
+  row.push(cell);
+  if (row.some((value) => value.trim())) rows.push(row);
+  return rows;
+}
+
+function catalogCsvMessage(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    return "This crop already has a reference with that name and type.";
+  }
+  return message(error);
+}
+
+export async function createCropReferenceAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage crop reference data.");
+  const parsed = z.object({
+    cropTypeId: z.string().min(1),
+    kind: z.nativeEnum(CropReferenceKind),
+    name: z.string().trim().min(1).max(120),
+    activeIngredient: optionalText,
+    notes: z.preprocess(
+      (input) => (typeof input === "string" && input.trim() === "" ? undefined : input),
+      z.string().trim().max(2000).optional(),
+    ),
+  }).safeParse({
+    cropTypeId: value(formData, "cropTypeId"),
+    kind: value(formData, "kind"),
+    name: value(formData, "name"),
+    activeIngredient: value(formData, "activeIngredient"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success) return invalid("Enter a crop, reference type and name.");
+
+  const db = tenantDb(context.farm.id, context.user.id);
+  const crop = await db.cropType.findFirst({
+    where: { id: parsed.data.cropTypeId, archivedAt: null },
+    select: { id: true },
+  });
+  if (!crop) return invalid("Choose a crop from this farm.");
+
+  try {
+    await db.cropReferenceItem.create({
+      data: {
+        farmId: context.farm.id,
+        cropTypeId: crop.id,
+        kind: parsed.data.kind,
+        name: parsed.data.name,
+        activeIngredient: parsed.data.activeIngredient,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const errorMessage = catalogCsvMessage(error);
+    if (errorMessage) return invalid(errorMessage);
+    throw error;
+  }
+
+  revalidatePath("/");
+  return { message: "Crop reference saved.", success: true };
+}
+
+export async function importCropReferencesAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can import crop reference data.");
+  const cropTypeId = value(formData, "cropTypeId");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return invalid("Choose a CSV template file to import.");
+  if (file.size > 1_000_000) return invalid("The CSV file must be smaller than 1 MB.");
+
+  const db = tenantDb(context.farm.id, context.user.id);
+  const crop = await db.cropType.findFirst({
+    where: { id: cropTypeId, archivedAt: null },
+    select: { id: true },
+  });
+  if (!crop) return invalid("Choose a crop from this farm.");
+
+  const rows = parseCsvRows((await file.text()).replace(/^\uFEFF/, ""));
+  if (!rows || rows.length < 2) return invalid("The CSV is empty or has unclosed quotation marks.");
+  const expectedHeader = ["kind", "name", "active_ingredient", "notes"];
+  if (rows[0]!.map((cell) => cell.trim().toLowerCase()).join(",") !== expectedHeader.join(",")) {
+    return invalid("Use the downloaded template with columns: kind, name, active_ingredient, notes.");
+  }
+  if (rows.length > 201) return invalid("Import no more than 200 crop reference rows at a time.");
+
+  const uniqueRows = new Map<string, {
+    farmId: string;
+    cropTypeId: string;
+    kind: CropReferenceKind;
+    name: string;
+    activeIngredient: string | null;
+    notes: string | null;
+  }>();
+  for (const [index, row] of rows.slice(1).entries()) {
+    if (row.length !== expectedHeader.length) return invalid(`Row ${index + 2} must contain exactly four columns.`);
+    const [kindInput, nameInput, ingredientInput, notesInput] = row.map((cell) => cell.trim());
+    const kind = kindInput?.toUpperCase();
+    const name = nameInput ?? "";
+    const activeIngredient = ingredientInput || null;
+    const notes = notesInput || null;
+    if (kind !== "DISEASE" && kind !== "PESTICIDE") {
+      return invalid(`Row ${index + 2}: kind must be DISEASE or PESTICIDE.`);
+    }
+    if (!name || name.length > 120 || (activeIngredient?.length ?? 0) > 500 || (notes?.length ?? 0) > 2000) {
+      return invalid(`Row ${index + 2}: enter a name (up to 120 characters); optional fields have length limits.`);
+    }
+    const key = `${kind}:${name.toLocaleLowerCase()}`;
+    uniqueRows.set(key, {
+      farmId: context.farm.id,
+      cropTypeId: crop.id,
+      kind,
+      name,
+      activeIngredient,
+      notes,
+    });
+  }
+  if (!uniqueRows.size) return invalid("Add at least one disease or pesticide row to the template.");
+
+  try {
+    const result = await db.cropReferenceItem.createMany({
+      data: [...uniqueRows.values()],
+      skipDuplicates: true,
+    });
+    revalidatePath("/");
+    return {
+      message: `Imported ${result.count} crop reference item${result.count === 1 ? "" : "s"}. Duplicate rows were skipped.`,
+      success: true,
+    };
+  } catch (error) {
+    const errorMessage = catalogCsvMessage(error);
+    if (errorMessage) return invalid(errorMessage);
+    throw error;
+  }
 }
 
 export async function createHoldingAction(
@@ -596,12 +769,14 @@ export async function createNurseryCheckAction(
   if (!context) return invalid("Your session expired. Sign in again.");
   const parsed = z.object({
     batchId: z.string().min(1),
+    offlineId: optionalText,
     germinated: optionalNumber,
     surviving: optionalNumber,
     condition: optionalText,
     notes: optionalText,
   }).safeParse({
     batchId: value(formData, "batchId"),
+    offlineId: value(formData, "offlineId"),
     germinated: value(formData, "germinated"),
     surviving: value(formData, "surviving"),
     condition: value(formData, "condition"),
@@ -622,12 +797,16 @@ export async function createNurseryCheckAction(
     select: { id: true },
   });
   if (!batch) return invalid("Choose a nursery batch from this farm.");
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).nurseryCheck.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Nursery check already synced.", success: true };
 
   try {
     await tenantDb(context.farm.id, context.user.id).nurseryCheck.create({
       data: {
         farmId: context.farm.id,
         batchId: batch.id,
+        offlineId: parsed.data.offlineId ?? null,
         germinated: parsed.data.germinated,
         surviving: parsed.data.surviving,
         condition: parsed.data.condition,
@@ -769,12 +948,14 @@ export async function recordWeatherAction(
   const parsed = z.object({
     plotId: z.string().min(1),
     cycleId: optionalText,
+    offlineId: optionalText,
     rainfallMm: optionalNumber,
     temperatureC: optionalNumber,
     notes: optionalText,
   }).safeParse({
     plotId: value(formData, "plotId"),
     cycleId: value(formData, "cycleId") || undefined,
+    offlineId: value(formData, "offlineId"),
     rainfallMm: value(formData, "rainfallMm"),
     temperatureC: value(formData, "temperatureC"),
     notes: value(formData, "notes"),
@@ -788,12 +969,16 @@ export async function recordWeatherAction(
   if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
     return invalid("Choose a plot and crop cycle from this farm.");
   }
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).weatherLog.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Weather observation already synced.", success: true };
   try {
     await tenantDb(context.farm.id, context.user.id).weatherLog.create({
       data: {
         farmId: context.farm.id,
         plotId: parsed.data.plotId,
         cycleId: parsed.data.cycleId || null,
+        offlineId: parsed.data.offlineId ?? null,
         observedAt: optionalDate(observedAt) ?? new Date(),
         rainfallMm: parsed.data.rainfallMm,
         temperatureC: parsed.data.temperatureC,
@@ -819,12 +1004,14 @@ export async function recordScoutingAction(
   const parsed = z.object({
     plotId: z.string().min(1),
     cycleId: optionalText,
+    offlineId: optionalText,
     issue: z.string().trim().min(2).max(120),
     severity: z.nativeEnum(ScoutingSeverity),
     notes: optionalText,
   }).safeParse({
     plotId: value(formData, "plotId"),
     cycleId: value(formData, "cycleId") || undefined,
+    offlineId: value(formData, "offlineId"),
     issue: value(formData, "issue"),
     severity: value(formData, "severity"),
     notes: value(formData, "notes"),
@@ -833,12 +1020,16 @@ export async function recordScoutingAction(
   if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
     return invalid("Choose a plot and crop cycle from this farm.");
   }
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).scoutingLog.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Scouting observation already synced.", success: true };
   try {
     await tenantDb(context.farm.id, context.user.id).scoutingLog.create({
       data: {
         farmId: context.farm.id,
         plotId: parsed.data.plotId,
         cycleId: parsed.data.cycleId || null,
+        offlineId: parsed.data.offlineId ?? null,
         observedAt: optionalDate(observedAt) ?? new Date(),
         issue: parsed.data.issue,
         severity: parsed.data.severity,
@@ -864,6 +1055,7 @@ export async function recordSprayAction(
   const parsed = z.object({
     plotId: z.string().min(1),
     cycleId: optionalText,
+    offlineId: optionalText,
     product: z.string().trim().min(2).max(120),
     activeIngredient: optionalText,
     batch: optionalText,
@@ -873,6 +1065,7 @@ export async function recordSprayAction(
   }).safeParse({
     plotId: value(formData, "plotId"),
     cycleId: value(formData, "cycleId") || undefined,
+    offlineId: value(formData, "offlineId"),
     product: value(formData, "product"),
     activeIngredient: value(formData, "activeIngredient"),
     batch: value(formData, "batch"),
@@ -890,12 +1083,16 @@ export async function recordSprayAction(
   if (!await farmPlotAndCycle(context.farm.id, context.user.id, parsed.data.plotId, parsed.data.cycleId)) {
     return invalid("Choose a plot and crop cycle from this farm.");
   }
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).sprayRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Spray record already synced.", success: true };
   try {
     await tenantDb(context.farm.id, context.user.id).sprayRecord.create({
       data: {
         farmId: context.farm.id,
         plotId: parsed.data.plotId,
         cycleId: parsed.data.cycleId || null,
+        offlineId: parsed.data.offlineId ?? null,
         product: parsed.data.product,
         activeIngredient: parsed.data.activeIngredient,
         batch: parsed.data.batch,
@@ -1000,18 +1197,23 @@ export async function createActivityLogAction(
   const loggedAt = value(formData, "loggedAt");
   const parsed = z.object({
     cycleId: optionalText,
+    offlineId: optionalText,
     body: z.string().trim().min(1).max(4000),
     weather: optionalText,
     whoWorked: optionalText,
     loggedAt: z.string().optional(),
   }).safeParse({
     cycleId: value(formData, "cycleId") || undefined,
+    offlineId: value(formData, "offlineId"),
     body: value(formData, "body"),
     weather: value(formData, "weather"),
     whoWorked: value(formData, "whoWorked"),
     loggedAt,
   });
   if (!parsed.success || dateError(parsed.data.loggedAt ?? "")) return invalid("Write a daily note and check the date.");
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).activityLog.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Daily activity already synced.", success: true };
   if (parsed.data.cycleId) {
     const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
       where: { id: parsed.data.cycleId, farmId: context.farm.id },
@@ -1030,6 +1232,7 @@ export async function createActivityLogAction(
         weather: parsed.data.weather,
         whoWorked: parsed.data.whoWorked,
         loggedAt: optionalDate(parsed.data.loggedAt ?? "") ?? new Date(),
+        offlineId: parsed.data.offlineId ?? null,
       },
     });
   } catch (error) {
@@ -1088,6 +1291,7 @@ export async function createWorkEntryAction(
   const parsed = z.object({
     workerId: z.string().min(1),
     cycleId: optionalText,
+    offlineId: optionalText,
     taskLabel: z.string().trim().min(1).max(120),
     startedAt: z.string().min(1),
     endedAt: z.string().min(1),
@@ -1101,6 +1305,7 @@ export async function createWorkEntryAction(
   }).safeParse({
     workerId: value(formData, "workerId"),
     cycleId: value(formData, "cycleId") || undefined,
+    offlineId: value(formData, "offlineId"),
     taskLabel: value(formData, "taskLabel"),
     startedAt,
     endedAt,
@@ -1117,6 +1322,9 @@ export async function createWorkEntryAction(
   ) {
     return invalid("Enter valid work times; the end time must be after the start.");
   }
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).workEntry.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Work entry already synced.", success: true };
   const [worker, cycle] = await Promise.all([
     tenantDb(context.farm.id, context.user.id).worker.findFirst({
       where: { id: parsed.data.workerId, farmId: context.farm.id, active: true },
@@ -1166,6 +1374,7 @@ export async function createWorkEntryAction(
         paid: parsed.data.paid === "yes",
         paymentMethod: parsed.data.paid === "yes" ? parsed.data.paymentMethod : null,
         paymentReference: parsed.data.paid === "yes" ? parsed.data.paymentReference : null,
+        offlineId: parsed.data.offlineId ?? null,
       },
     });
   } catch (error) {
@@ -1189,17 +1398,43 @@ export async function createExpenseAction(
     cycleId: optionalText,
     category: z.nativeEnum(ExpenseCategory),
     amount: positiveNumber,
+    offlineId: optionalText,
+    allocations: z.string().max(5000).optional(),
     spentAt: z.string().optional(),
     notes: optionalText,
   }).safeParse({
     cycleId: value(formData, "cycleId") || undefined,
     category: value(formData, "category"),
     amount: value(formData, "amount"),
+    offlineId: value(formData, "offlineId"),
+    allocations: value(formData, "allocations"),
     spentAt,
     notes: value(formData, "notes"),
   });
   if (!parsed.success || dateError(parsed.data.spentAt ?? "")) return invalid("Enter a valid expense and date.");
-  if (parsed.data.cycleId) {
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).expense.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
+  })) return { message: "Expense already synced.", success: true };
+  const allocationText = parsed.data.allocations?.trim() ?? "";
+  let allocations: Array<{ cycleId?: string; plotId?: string; amount: number }> = [];
+  if (allocationText) {
+    const allocationResult = parseExpenseAllocations(allocationText, parsed.data.amount);
+    if (!allocationResult.allocations) return invalid(allocationResult.error);
+    allocations = allocationResult.allocations;
+    const cycleIds = allocations.flatMap((allocation) => allocation.cycleId ? [allocation.cycleId] : []);
+    const plotIds = allocations.flatMap((allocation) => allocation.plotId ? [allocation.plotId] : []);
+    const [validCycles, validPlots] = await Promise.all([
+      cycleIds.length ? tenantDb(context.farm.id, context.user.id).cropCycle.count({
+        where: { farmId: context.farm.id, id: { in: cycleIds } },
+      }) : 0,
+      plotIds.length ? tenantDb(context.farm.id, context.user.id).plot.count({
+        where: { farmId: context.farm.id, id: { in: plotIds } },
+      }) : 0,
+    ]);
+    if (validCycles !== new Set(cycleIds).size || validPlots !== new Set(plotIds).size) {
+      return invalid("Every allocation target must belong to this farm.");
+    }
+  } else if (parsed.data.cycleId) {
     const cycle = await tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
       where: { id: parsed.data.cycleId, farmId: context.farm.id },
       select: { id: true },
@@ -1211,12 +1446,24 @@ export async function createExpenseAction(
     await tenantDb(context.farm.id, context.user.id).expense.create({
       data: {
         farmId: context.farm.id,
-        cycleId: parsed.data.cycleId || null,
+        cycleId: allocationText ? null : parsed.data.cycleId || null,
         category: parsed.data.category,
         amount: parsed.data.amount,
         currency: context.farm.currency,
         spentAt: optionalDate(parsed.data.spentAt ?? "") ?? new Date(),
         notes: parsed.data.notes,
+        offlineId: parsed.data.offlineId ?? null,
+        ...(allocationText ? {
+          allocations: {
+            create: allocations.map((allocation) => ({
+              farmId: context.farm.id,
+              cycleId: allocation.cycleId ?? null,
+              plotId: allocation.plotId ?? null,
+              amount: allocation.amount,
+              currency: context.farm.currency,
+            })),
+          },
+        } : {}),
       },
     });
   } catch (error) {
@@ -1226,6 +1473,75 @@ export async function createExpenseAction(
   }
   revalidatePath("/");
   return { message: "Expense recorded.", success: true };
+}
+
+export async function createMachineJobAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can record machinery costs.");
+  const parsed = z.object({
+    cycleId: optionalText,
+    plotId: optionalText,
+    description: z.string().trim().min(1).max(200),
+    hours: positiveNumber,
+    fuelCost: z.coerce.number().finite().min(0),
+    hireCost: z.coerce.number().finite().min(0),
+    maintenanceCost: z.coerce.number().finite().min(0),
+    performedAt: z.string().optional(),
+  }).safeParse({
+    cycleId: value(formData, "cycleId"),
+    plotId: value(formData, "plotId"),
+    description: value(formData, "description"),
+    hours: value(formData, "hours"),
+    fuelCost: value(formData, "fuelCost") || "0",
+    hireCost: value(formData, "hireCost") || "0",
+    maintenanceCost: value(formData, "maintenanceCost") || "0",
+    performedAt: value(formData, "performedAt"),
+  });
+  if (!parsed.success || dateError(parsed.data.performedAt ?? "")) {
+    return invalid("Enter a valid machinery job, hours and date.");
+  }
+  const [cycle, plot] = await Promise.all([
+    parsed.data.cycleId ? tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
+      where: { id: parsed.data.cycleId, farmId: context.farm.id },
+      select: { id: true, plotId: true },
+    }) : null,
+    parsed.data.plotId ? tenantDb(context.farm.id, context.user.id).plot.findFirst({
+      where: { id: parsed.data.plotId, farmId: context.farm.id },
+      select: { id: true },
+    }) : null,
+  ]);
+  if ((parsed.data.cycleId && !cycle) || (parsed.data.plotId && !plot)) {
+    return invalid("Choose a crop cycle and plot from this farm.");
+  }
+  if (cycle && plot && cycle.plotId !== plot.id) {
+    return invalid("The selected plot must match the crop cycle's plot.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).machineJob.create({
+      data: {
+        farmId: context.farm.id,
+        cycleId: cycle?.id ?? null,
+        plotId: plot?.id ?? cycle?.plotId ?? null,
+        description: parsed.data.description,
+        hours: parsed.data.hours,
+        fuelCost: parsed.data.fuelCost,
+        hireCost: parsed.data.hireCost,
+        maintenanceCost: parsed.data.maintenanceCost,
+        currency: context.farm.currency,
+        performedAt: optionalDate(parsed.data.performedAt ?? "") ?? new Date(),
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Machinery job recorded.", success: true };
 }
 
 export async function createStockItemAction(

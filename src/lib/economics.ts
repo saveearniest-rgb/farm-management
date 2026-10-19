@@ -10,6 +10,12 @@ export type CropPlanNumbers = {
   lines: Array<{ category: string; amount: number; timingMonth: number | null }>;
 };
 
+export const variableCostCategories = ["HARVEST", "PACKAGING", "TRANSPORT"] as const;
+
+export function isVariableCostCategory(category: string) {
+  return variableCostCategories.some((variableCategory) => variableCategory === category);
+}
+
 export function calculatePlan(plan: CropPlanNumbers) {
   const totalSeeds =
     plan.seedGrams !== null && plan.seedsPerGram !== null
@@ -33,13 +39,34 @@ export function calculatePlan(plan: CropPlanNumbers) {
     plantsForYield !== null && plan.yieldPerPlant !== null
       ? plantsForYield * plan.yieldPerPlant
       : null;
-  const totalCost = plan.lines.reduce((sum, line) => sum + line.amount, 0);
+  const fixedCost = plan.lines
+    .filter((line) => !isVariableCostCategory(line.category))
+    .reduce((sum, line) => sum + line.amount, 0);
+  const variableCostPerUnit = plan.lines
+    .filter((line) => isVariableCostCategory(line.category))
+    .reduce((sum, line) => sum + line.amount, 0);
+  const variableHarvestCost =
+    projectedYield === null ? null : variableCostPerUnit * projectedYield;
+  const totalCost =
+    variableHarvestCost === null && variableCostPerUnit > 0
+      ? null
+      : fixedCost + (variableHarvestCost ?? 0);
   const projectedRevenue =
     projectedYield !== null && plan.farmgatePrice !== null
       ? projectedYield * plan.farmgatePrice
       : null;
   const projectedProfit =
-    projectedRevenue !== null ? projectedRevenue - totalCost : null;
+    projectedRevenue !== null && totalCost !== null
+      ? projectedRevenue - totalCost
+      : null;
+  const profitMargin =
+    projectedProfit !== null && projectedRevenue !== null && projectedRevenue > 0
+      ? projectedProfit / projectedRevenue
+      : null;
+  const returnOnCost =
+    projectedProfit !== null && totalCost !== null && totalCost > 0
+      ? projectedProfit / totalCost
+      : null;
 
   return {
     totalSeeds,
@@ -50,19 +77,36 @@ export function calculatePlan(plan: CropPlanNumbers) {
     totalCost,
     projectedRevenue,
     projectedProfit,
+    profitMargin,
+    returnOnCost,
+    fixedCost,
+    variableCostPerUnit,
+    variableHarvestCost,
     costPerUnit:
-      projectedYield !== null && projectedYield > 0
+      totalCost !== null && projectedYield !== null && projectedYield > 0
         ? totalCost / projectedYield
         : null,
     breakEvenPrice:
-      projectedYield !== null && projectedYield > 0
+      totalCost !== null && projectedYield !== null && projectedYield > 0
         ? totalCost / projectedYield
         : null,
     breakEvenYield:
-      plan.farmgatePrice !== null && plan.farmgatePrice > 0
+      totalCost !== null && plan.farmgatePrice !== null && plan.farmgatePrice > 0
         ? totalCost / plan.farmgatePrice
         : null,
   };
+}
+
+export function calculatePlannedCostsByCategory(plan: CropPlanNumbers) {
+  const projectedYield = calculatePlan(plan).projectedYield ?? 0;
+  const costs = new Map<string, number>();
+  for (const line of plan.lines) {
+    const amount = isVariableCostCategory(line.category)
+      ? line.amount * projectedYield
+      : line.amount;
+    costs.set(line.category, (costs.get(line.category) ?? 0) + amount);
+  }
+  return costs;
 }
 
 export type CycleActuals = {
@@ -112,28 +156,69 @@ export function calculateActuals(actuals: CycleActuals) {
     (sum, sale) => sum + sale.quantity * sale.price,
     0,
   );
+  const soldQuantity = actuals.sales.reduce((sum, sale) => sum + sale.quantity, 0);
 
   return {
     costsByCategory,
     totalCost,
     harvestedQuantity,
     revenue,
+    soldQuantity,
     profit: revenue - totalCost,
     costPerUnit:
       harvestedQuantity > 0 ? totalCost / harvestedQuantity : null,
   };
 }
 
+export function calculateProfitVarianceDriver(
+  plan: CropPlanNumbers,
+  actuals: ReturnType<typeof calculateActuals>,
+) {
+  const totals = calculatePlan(plan);
+  if (
+    totals.projectedYield === null ||
+    totals.projectedProfit === null ||
+    plan.farmgatePrice === null
+  ) {
+    return null;
+  }
+
+  const drivers = [
+    {
+      label: "Sales volume",
+      impact: (actuals.soldQuantity - totals.projectedYield) * plan.farmgatePrice,
+    },
+    {
+      label: "Sale price",
+      impact: actuals.revenue - actuals.soldQuantity * plan.farmgatePrice,
+    },
+  ];
+  const plannedCosts = calculatePlannedCostsByCategory(plan);
+  const costCategories = new Set([...plannedCosts.keys(), ...actuals.costsByCategory.keys()]);
+  for (const category of costCategories) {
+    drivers.push({
+      label: `Cost: ${category.replaceAll("_", " ").toLowerCase()}`,
+      impact: (plannedCosts.get(category) ?? 0) - (actuals.costsByCategory.get(category) ?? 0),
+    });
+  }
+  return drivers.reduce((largest, driver) =>
+    Math.abs(driver.impact) > Math.abs(largest.impact) ? driver : largest,
+  );
+}
+
 export function buildMonthlyCashFlow(
   plan: CropPlanNumbers,
   harvestMonth: number | null,
+  cropName?: string,
 ) {
   const months = Array.from({ length: 12 }, (_, index) => ({
     month: index + 1,
     cost: 0,
     revenue: 0,
   }));
+  const totals = calculatePlan(plan);
   for (const line of plan.lines) {
+    if (isVariableCostCategory(line.category)) continue;
     if (
       line.timingMonth !== null &&
       Number.isInteger(line.timingMonth) &&
@@ -143,16 +228,25 @@ export function buildMonthlyCashFlow(
       months[line.timingMonth - 1]!.cost += line.amount;
     }
   }
-  const totals = calculatePlan(plan);
-  if (
+  const harvestCurve = Array<number>(months.length).fill(0);
+  if (cropName?.toLowerCase().includes("bell pepper")) {
+    for (let month = 4; month <= 9; month += 1) harvestCurve[month - 1] = 1 / 6;
+  } else if (
     harvestMonth !== null &&
     Number.isInteger(harvestMonth) &&
     harvestMonth >= 1 &&
-    harvestMonth <= months.length &&
-    totals.projectedRevenue !== null
+    harvestMonth <= months.length
   ) {
-    months[harvestMonth - 1]!.revenue += totals.projectedRevenue;
+    harvestCurve[harvestMonth - 1] = 1;
   }
+  harvestCurve.forEach((share, index) => {
+    if (totals.projectedRevenue !== null) {
+      months[index]!.revenue += totals.projectedRevenue * share;
+    }
+    if (totals.variableHarvestCost !== null) {
+      months[index]!.cost += totals.variableHarvestCost * share;
+    }
+  });
   return months.map((month) => ({
     ...month,
     net: month.revenue - month.cost,
@@ -185,7 +279,7 @@ export function buildPlanCsv({
   actuals: ReturnType<typeof calculateActuals>;
 }) {
   const totals = calculatePlan(plan);
-  const monthly = buildMonthlyCashFlow(plan, harvestMonth);
+  const monthly = buildMonthlyCashFlow(plan, harvestMonth, cropName);
   const rows: Array<Array<string | number | null>> = [
     ["Crop plan vs actual"],
     ["Crop", cropName],
@@ -204,15 +298,21 @@ export function buildPlanCsv({
     ["Yield per plant", plan.yieldPerPlant],
     ["Farmgate price", plan.farmgatePrice],
     [],
-    ["Planned cost", "Amount", "Cycle month"],
-    ...plan.lines.map((line) => [line.category, line.amount, line.timingMonth]),
+    ["Planned cost", "Amount or unit rate", "Unit", "Cycle month"],
+    ...plan.lines.map((line) => [
+      line.category,
+      line.amount,
+      isVariableCostCategory(line.category) ? `${currency}/${yieldUnit}` : currency,
+      line.timingMonth,
+    ]),
     ["Total planned cost", totals.totalCost],
     [],
     ["Measure", "Plan", "Actual", "Variance"],
     ["Yield", totals.projectedYield, actuals.harvestedQuantity, totals.projectedYield === null ? null : actuals.harvestedQuantity - totals.projectedYield],
     ["Revenue", totals.projectedRevenue, actuals.revenue, totals.projectedRevenue === null ? null : actuals.revenue - totals.projectedRevenue],
-    ["Cost", totals.totalCost, actuals.totalCost, actuals.totalCost - totals.totalCost],
+    ["Cost", totals.totalCost, actuals.totalCost, totals.totalCost === null ? null : actuals.totalCost - totals.totalCost],
     ["Profit", totals.projectedProfit, actuals.profit, totals.projectedProfit === null ? null : actuals.profit - totals.projectedProfit],
+    ["Largest profit variance driver", calculateProfitVarianceDriver(plan, actuals)?.label ?? "Not available"],
     ["Break-even price", totals.breakEvenPrice],
     [],
     ["Cycle month", "Cost", "Income", "Net"],

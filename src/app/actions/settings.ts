@@ -1,7 +1,7 @@
 "use server";
 
 import { randomBytes } from "node:crypto";
-import { DataRequestType, FarmRole, Prisma } from "@prisma/client";
+import { DataRequestScope, DataRequestType, FarmRole, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -45,6 +45,11 @@ export async function createWorkspaceAction(
     district: z.string().trim().max(100).optional(),
     currency: z.enum(["TZS", "USD"]),
     areaUnit: z.enum(["acre", "hectare", "square metre"]),
+    totalAreaValue: z.preprocess(
+      (value) => (value === "" || value === null || value === undefined ? undefined : value),
+      z.coerce.number().finite().positive().optional(),
+    ),
+    totalAreaUnit: z.enum(["acre", "hectare"]),
     timezone: z.string().trim().min(1).max(80),
   }).safeParse({
     name: value(formData, "name"),
@@ -52,6 +57,8 @@ export async function createWorkspaceAction(
     district: value(formData, "district"),
     currency: value(formData, "currency"),
     areaUnit: value(formData, "areaUnit") || "acre",
+    totalAreaValue: value(formData, "totalAreaValue"),
+    totalAreaUnit: value(formData, "totalAreaUnit") || "acre",
     timezone: value(formData, "timezone") || "Africa/Dar_es_Salaam",
   });
   if (!parsed.success) return invalid("Enter a farm name and choose a currency.");
@@ -65,6 +72,8 @@ export async function createWorkspaceAction(
           district: parsed.data.district || null,
           currency: parsed.data.currency,
           areaUnit: parsed.data.areaUnit,
+          totalAreaValue: parsed.data.totalAreaValue,
+          totalAreaUnit: parsed.data.totalAreaUnit,
           timezone: parsed.data.timezone,
           members: { create: { userId: context.user.id, role: FarmRole.OWNER } },
         },
@@ -263,6 +272,11 @@ export async function updateFarmSettingsAction(
     district: z.string().trim().max(100).optional(),
     currency: z.enum(["TZS", "USD"]),
     areaUnit: z.enum(["acre", "hectare", "square metre"]),
+    totalAreaValue: z.preprocess(
+      (value) => (value === "" || value === null || value === undefined ? undefined : value),
+      z.coerce.number().finite().positive().optional(),
+    ),
+    totalAreaUnit: z.enum(["acre", "hectare"]),
     timezone: z.string().trim().min(1).max(80),
     nationalFarmerId: z.string().trim().max(100).optional(),
   }).safeParse({
@@ -271,6 +285,8 @@ export async function updateFarmSettingsAction(
     district: value(formData, "district"),
     currency: value(formData, "currency"),
     areaUnit: value(formData, "areaUnit"),
+    totalAreaValue: value(formData, "totalAreaValue"),
+    totalAreaUnit: value(formData, "totalAreaUnit"),
     timezone: value(formData, "timezone"),
     nationalFarmerId: value(formData, "nationalFarmerId"),
   });
@@ -284,6 +300,8 @@ export async function updateFarmSettingsAction(
       district: parsed.data.district || null,
       currency: parsed.data.currency,
       areaUnit: parsed.data.areaUnit,
+      totalAreaValue: parsed.data.totalAreaValue,
+      totalAreaUnit: parsed.data.totalAreaUnit,
       timezone: parsed.data.timezone,
       nationalFarmerId: parsed.data.nationalFarmerId || null,
     },
@@ -338,12 +356,36 @@ export async function requestDataAction(
   if (type !== DataRequestType.EXPORT && type !== DataRequestType.DELETION) {
     return invalid("Choose an export or deletion request.");
   }
+  if (context.role !== FarmRole.OWNER) {
+    return invalid("Only a farm owner can request an export or deletion review.");
+  }
+
+  let scope: DataRequestScope | null = null;
+  let subjectUserId: string | null = null;
+  if (type === DataRequestType.DELETION) {
+    const requestedScope = value(formData, "scope");
+    if (requestedScope !== DataRequestScope.FARM && requestedScope !== DataRequestScope.PERSON) {
+      return invalid("Choose whether the deletion request covers the farm or one person's data.");
+    }
+    scope = requestedScope;
+    if (scope === DataRequestScope.PERSON) {
+      const selectedUserId = value(formData, "subjectUserId");
+      const member = await tenantDb(context.farm.id, context.user.id).farmMember.findFirst({
+        where: { farmId: context.farm.id, userId: selectedUserId },
+        select: { userId: true },
+      });
+      if (!member) return invalid("Choose a person who is a member of this farm.");
+      subjectUserId = member.userId;
+    }
+  }
 
   try {
     await tenantDb(context.farm.id, context.user.id).dataRequest.create({
       data: {
         farmId: context.farm.id,
         userId: context.user.id,
+        scope,
+        subjectUserId,
         type,
       },
     });
@@ -356,7 +398,7 @@ export async function requestDataAction(
   return {
     message: type === DataRequestType.EXPORT
       ? "Export request recorded. Your farm export is available from the settings page."
-      : "Deletion request recorded. Data will not be removed automatically; the request needs review.",
+      : "Deletion review recorded. The selected farm or person's data will not be removed automatically.",
     success: true,
   };
 }

@@ -16,6 +16,11 @@ const signupSchema = z.object({
   password: z.string().min(10).max(72),
   farmName: z.string().trim().min(2).max(100),
   region: z.string().trim().max(100).optional(),
+  totalAreaValue: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? undefined : value),
+    z.coerce.number().finite().positive().optional(),
+  ),
+  totalAreaUnit: z.enum(["acre", "hectare"]),
   locale: z.enum(["en", "sw"]),
   redirectTo: z.string().optional(),
 });
@@ -51,6 +56,8 @@ export async function signupAction(
     password: formData.get("password"),
     farmName: formData.get("farmName"),
     region: formData.get("region") || undefined,
+    totalAreaValue: formData.get("totalAreaValue"),
+    totalAreaUnit: formData.get("totalAreaUnit") || "acre",
     locale: formData.get("locale"),
     redirectTo: formData.get("redirectTo") || undefined,
   });
@@ -75,6 +82,8 @@ export async function signupAction(
                   name: parsed.data.farmName,
                   region: parsed.data.region || null,
                   currency: "TZS",
+                  totalAreaValue: parsed.data.totalAreaValue,
+                  totalAreaUnit: parsed.data.totalAreaUnit,
                 },
               },
             },

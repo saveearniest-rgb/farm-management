@@ -14,9 +14,11 @@ import { FormField, FormSelect } from "./action-form";
 
 export function OfflineActivityForm({
   cycles,
+  farmId,
   locale,
 }: {
   cycles: Array<{ id: string; cropName: string; plotName: string }>;
+  farmId: string;
   locale: Locale;
 }) {
   const [pendingLogs, setPendingLogs] = useState<PendingLog[]>([]);
@@ -26,13 +28,15 @@ export function OfflineActivityForm({
 
   const syncRows = useCallback(async (rows: PendingLog[]) => {
     if (!navigator.onLine) return;
-    for (const log of rows) {
+    const farmRows = rows.filter((log) => log.farmId === farmId);
+    for (const log of farmRows) {
       const formData = new FormData();
       formData.set("body", log.body);
       formData.set("weather", log.weather);
       formData.set("whoWorked", log.whoWorked);
       formData.set("cycleId", log.cycleId);
       formData.set("loggedAt", log.loggedAt.slice(0, 10));
+      formData.set("offlineId", log.id);
       const result = await createActivityLogAction({ message: "" }, formData);
       if (!result.success) {
         setMessage(result.message || t("offlineSyncNeedsAttention"));
@@ -42,8 +46,12 @@ export function OfflineActivityForm({
     }
     const remaining = await listPendingLogs();
     setPendingLogs(remaining);
-    if (rows.length > 0) setMessage(t("offlineSyncSaved"));
-  }, [t]);
+    if (remaining.some((log) => !log.farmId)) {
+      setMessage(t("offlineLegacyFarmReview"));
+    } else if (farmRows.length > 0) {
+      setMessage(t("offlineSyncSaved"));
+    }
+  }, [farmId, t]);
 
   const syncPending = useCallback(async () => {
     if (!navigator.onLine) return;
@@ -90,6 +98,7 @@ export function OfflineActivityForm({
     const data = new FormData(form);
     const log: PendingLog = {
       id: crypto.randomUUID(),
+      farmId,
       body: String(data.get("body") ?? "").trim(),
       weather: String(data.get("weather") ?? "").trim(),
       whoWorked: String(data.get("whoWorked") ?? "").trim(),

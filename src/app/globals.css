@@ -84,6 +84,21 @@ a {
   min-height: 100vh;
 }
 
+.offline-sync-banner {
+  position: fixed;
+  z-index: 20;
+  right: 18px;
+  bottom: 18px;
+  max-width: min(420px, calc(100vw - 36px));
+  padding: 11px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -2097,14 +2112,16 @@ td small {
   justify-content: center;
   padding: 46px;
   border-radius: 18px;
-  background: #e9f0e7;
+  background:
+    linear-gradient(135deg, rgb(16 38 25 / 82%), rgb(28 66 39 / 68%)),
+    url("/farm6.jpg") center 48% / cover;
 }
 
 .auth-story .eyebrow {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #668069;
+  color: rgb(234 246 226 / 88%);
   font-size: 9px;
 }
 
@@ -2112,7 +2129,7 @@ td small {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #769672;
+  background: #b4d59b;
 }
 
 .auth-story h1 {
@@ -2120,7 +2137,7 @@ td small {
   z-index: 1;
   max-width: 400px;
   margin: 19px 0 13px;
-  color: #2a4533;
+  color: #f5f8f2;
   font-size: clamp(33px, 4vw, 45px);
   font-weight: 590;
   letter-spacing: -1.8px;
@@ -2132,7 +2149,7 @@ td small {
   z-index: 1;
   max-width: 340px;
   margin: 0;
-  color: #718170;
+  color: rgb(239 245 234 / 86%);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -2145,7 +2162,7 @@ td small {
   display: flex;
   align-items: center;
   gap: 9px;
-  color: #7c887a;
+  color: rgb(242 246 238 / 80%);
   font-size: 9px;
 }
 
@@ -2154,10 +2171,10 @@ td small {
   width: 27px;
   height: 27px;
   place-items: center;
-  border: 1px solid rgb(88 119 82 / 22%);
+  border: 1px solid rgb(226 243 214 / 35%);
   border-radius: 50%;
-  background: rgb(255 255 255 / 55%);
-  color: #507151;
+  background: rgb(255 255 255 / 16%);
+  color: #f0f7e8;
   font-size: 10px;
   font-weight: 700;
 }
@@ -2200,6 +2217,276 @@ td small {
   gap: 7px;
   color: #879187;
   font-size: 9px;
+}
+
+.theme-toggle {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--green);
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.theme-toggle:hover {
+  background: var(--green-soft);
+}
+
+.input-with-unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.input-with-unit input {
+  min-width: 0;
+}
+
+.input-with-unit select {
+  min-height: 40px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.input-with-unit input {
+  border-radius: 8px 0 0 8px !important;
+}
+
+.crop-reference-forms {
+  margin-bottom: 18px;
+}
+
+.crop-reference-import {
+  margin-top: 14px;
+}
+
+.crop-reference-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+}
+
+.crop-reference-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.crop-reference-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.crop-reference-row > div span,
+.crop-reference-row > div small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e5eee7;
+  --muted: #a0b2a5;
+  --line: #31463a;
+  --surface: #1d2c23;
+  --page: #142019;
+  --green: #95bd91;
+  --green-dark: #b4d5ae;
+  --green-soft: #293d30;
+  --green-light: #223529;
+  --sand: #382f21;
+  --shadow: 0 12px 34px rgb(0 0 0 / 20%);
+}
+
+html[data-theme="dark"] body,
+html[data-theme="dark"] .main-area,
+html[data-theme="dark"] .page-content,
+html[data-theme="dark"] .app-frame {
+  background: var(--page);
+  color: var(--ink);
+}
+
+html[data-theme="dark"] :is(
+  .sidebar,
+  .topbar,
+  .panel,
+  .stat-card,
+  .worker-card,
+  .auth-card,
+  .search-box,
+  .workspace-chip,
+  .empty-state,
+  .data-row,
+  .stage-chip,
+  .plan-kpi,
+  .report-table-block,
+  .break-even-box
+) {
+  border-color: var(--line);
+  background-color: var(--surface);
+  color: var(--ink);
+}
+
+html[data-theme="dark"] :is(
+  .section-heading h2,
+  .section-heading p,
+  .welcome-row h1,
+  .welcome-row p,
+  .eyebrow,
+  .panel-header h3,
+  .panel-header p,
+  .stat-card strong,
+  .stat-card span,
+  .data-row strong,
+  .data-row span,
+  .detail-row strong,
+  .detail-row span,
+  .crop-template-card h3,
+  .crop-template-card > p,
+  .worker-card strong,
+  .worker-card span,
+  .task-row-copy strong,
+  .task-row-copy span,
+  .field > span,
+  .field small,
+  .field-help,
+  .form-message,
+  .form-footer,
+  .season-banner h2,
+  .season-banner p,
+  .season-pill,
+  .banner-link,
+  .sidebar-brand,
+  .mobile-brand,
+  .workspace-info strong,
+  .workspace-info span,
+  .breadcrumbs,
+  .topbar-date,
+  .auth-brand,
+  .auth-heading h2,
+  .auth-heading p,
+  .auth-form .field > span,
+  .auth-form .field small,
+  .auth-switch,
+  .auth-secure,
+  .auth-locale
+) {
+  color: var(--ink);
+}
+
+html[data-theme="dark"] :is(
+  .field input,
+  .field select,
+  .field textarea,
+  .search-box input,
+  .auth-locale select,
+  .input-with-unit select
+) {
+  border-color: var(--line);
+  background-color: #17251c;
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .field input::placeholder,
+html[data-theme="dark"] .field textarea::placeholder,
+html[data-theme="dark"] .search-box input::placeholder {
+  color: #829788;
+}
+
+html[data-theme="dark"] .auth-page {
+  background:
+    radial-gradient(ellipse at 12% 92%, rgb(86 126 77 / 13%), transparent 31%),
+    #111b15;
+}
+
+html[data-theme="dark"] .auth-card {
+  box-shadow: 0 20px 50px rgb(0 0 0 / 24%);
+}
+
+html[data-theme="dark"] .season-banner {
+  border-color: #354c3a;
+  background: #20372a;
+}
+
+html[data-theme="dark"] .season-banner .field-hill-back {
+  background: #304a35;
+}
+
+html[data-theme="dark"] .season-banner .field-hill-front {
+  background: #426345;
+}
+
+html[data-theme="dark"] .season-banner .banner-link {
+  color: #b6d5a7;
+}
+
+html[data-theme="dark"] .auth-story {
+  background:
+    linear-gradient(135deg, rgb(8 20 12 / 88%), rgb(16 48 26 / 73%)),
+    url("/farm6.jpg") center 48% / cover;
+}
+
+html[data-theme="dark"] .auth-secure {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .sidebar {
+  background: #18261d;
+}
+
+html[data-theme="dark"] .button-quiet {
+  border-color: var(--line);
+  background: #223329;
+  color: #d4e3d7;
+}
+
+html[data-theme="dark"] .topbar {
+  background: rgb(24 38 29 / 94%);
+}
+
+html[data-theme="dark"] .sidebar .nav-item,
+html[data-theme="dark"] .icon-button,
+html[data-theme="dark"] .theme-toggle {
+  color: #cadbce;
+}
+
+html[data-theme="dark"] .sidebar .nav-item.active,
+html[data-theme="dark"] .sidebar .nav-item:hover,
+html[data-theme="dark"] .icon-button:hover,
+html[data-theme="dark"] .theme-toggle:hover {
+  background: #293d30;
+  color: #c5e2bd;
+}
+
+html[data-theme="dark"] .auth-switch button {
+  color: #acd0a4;
+}
+
+html[data-theme="dark"] .auth-footer,
+html[data-theme="dark"] .auth-footer span {
+  color: #91a394;
+}
+
+html[data-theme="dark"] .mobile-page-title {
+  color: var(--ink);
+}
+
+@media (max-width: 650px) {
+  .auth-locale {
+    flex-wrap: wrap;
+  }
 }
 
 .auth-locale select {

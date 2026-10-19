@@ -61,6 +61,18 @@ The crop cycle is the cost and yield backbone. Reference prices, yields and weat
 
 The first account registered for a farm becomes its owner. A farm owner can create a seven-day manager invitation link from **Farm settings**. The invitee must sign in or create an account with the invited email address, then accept the link. Manager permissions are checked in server actions; managers cannot change financial or farm configuration.
 
+### Sign in, demo accounts, and restarting locally
+
+- **Create your own account:** On the sign-in screen, choose **Create account**, enter your name, email, password (at least 10 characters), farm name, and optionally the farm size in acres or hectares. Account creation signs you in and opens the new farm workspace.
+- **Local demo logins:** If the demo seed was run with the example local passwords, use `owner@example.test` / `DemoFarm!2026Local` or `manager@example.test` / `DemoManager!2026Local`. These are development-only credentials. The seed script uses the passwords supplied through `DEMO_OWNER_PASSWORD` and `DEMO_MANAGER_PASSWORD`; if they were set differently, use those values or create your own account.
+- **Start or reopen the app:** Open PowerShell in the repository, start PostgreSQL with `docker compose up -d postgres`, then run `npm run dev` and visit `http://localhost:3000`. Keep that terminal open while using the app. After stopping it with `Ctrl+C` or closing the terminal, run the same commands again. Farm data remains in the PostgreSQL Docker volume.
+- **Expired sign-in:** Auth.js sessions last up to 30 days. If redirected to sign-in, enter your email and password again; you do not need to recreate the farm. Keep the same `AUTH_SECRET` in `.env` between starts, because changing it invalidates existing sessions. If the password is unknown, create a separate account or reset the demo user's password by reseeding with new local demo-password environment values.
+- **Appearance:** Use the moon/sun button to switch between light mode and the foliage-green dark mode. The preference is saved in this browser.
+
+The Crop cycles section includes farm-owned disease and pesticide reference entries. Add them manually or download the CSV template, edit it in Excel, save it as UTF-8 CSV, then import it for a selected crop. The template contains no prefilled agricultural guidance; only add information verified for your farm.
+
+Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on local disk. The encryption key is derived from `AUTH_SECRET`, so keep that secret stable and configure persistent storage; see [docs/operations.md](./docs/operations.md).
+
 ## Available scripts
 
 | Command | Purpose |
@@ -83,12 +95,13 @@ The first account registered for a farm becomes its owner. A farm owner can crea
 - Nursery/direct-sown crop types, stage and care templates, crop cycles
 - Nursery batches, checks, transplants, tasks, reminders and activity notes
 - Weather observations, pest/disease scouting, spray records and pre-harvest interval warnings
-- Worker records, hours, recent pay summary, expenses, basic stock and suppliers/lots
+- Worker records, hours, recent pay summary, split expenses, machinery jobs, basic stock and suppliers/lots
+- Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
-- Crop plans, scenario assumptions, harvest/sales actuals, plan-vs-actual calculations, CSV spreadsheet export and browser print-to-PDF
-- Installable PWA metadata and local IndexedDB queueing for field notes
+- Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export
+- Installable PWA metadata and local IndexedDB queueing for field notes, task updates, nursery checks, labour, expenses, weather, scouting and spray records
 
-The offline queue is for field notes only; other forms require a connection. Files are not yet uploaded to object storage. SMS/WhatsApp, weather feeds, investor agreements, in-app signing and subscription billing are future work. Generated legal templates are not available for signing in the app.
+Supported offline form entries sync when signal returns; file uploads require a connection. Attachments use private local disk, not object storage. Crop-plan cost lines for harvest, packaging and transport are entered per yield unit; other cost lines are total costs. Saving an expected plan initializes low-price (30% lower price) and low-yield (40% lower yield) scenarios when they do not already exist. All plan assumptions are placeholders until the farm verifies them. SMS/WhatsApp, weather feeds, investor agreements, in-app signing and subscription billing are future work. Generated legal templates are not available for signing in the app.
 
 ## Data and privacy notes
 
@@ -97,8 +110,8 @@ The offline queue is for field notes only; other forms require a connection. Fil
 - Passwords are stored as bcrypt hashes and authentication/session cookies are handled by Auth.js. The optional selected-workspace cookie is checked against the authenticated user's memberships.
 - Manager-facing dashboard data omits financial values. Review role boundaries before adding new actions or data fields.
 - Optional anonymised-benchmark consent is recorded, but benchmark sharing is not currently used to publish or derive reference data.
-- Data exports are farm-owner-scoped JSON snapshots of farm records and audit metadata. Deletion is recorded as a review request and does not immediately delete data.
-- Configure regular PostgreSQL backups and production-grade secrets, TLS, monitoring and file storage before deploying real farm data.
+- Data exports are farm-owner-scoped JSON or CSV snapshots of farm records and audit metadata. Deletion is recorded as a review request and does not immediately delete data; see [docs/operations.md](./docs/operations.md) for retention and recovery rules.
+- Configure regular PostgreSQL and attachment backups, production-grade secrets, TLS, monitoring and persistent file storage before deploying real farm data.
 
 ## Slice 1 demo and test notes
 
@@ -116,6 +129,8 @@ Use a clearly labelled test farm and test records for a pretend cycle; do not tr
 1. Add an owned or rented holding, then add a plot with its area unit, soil, water source and tenure details.
 2. Create a nursery or direct-sown crop type. Leave yield, spacing and cycle assumptions blank unless you have verified farm-specific figures.
 3. Start a crop cycle on the plot. For nursery crops, record a seed batch, survival check and transplant count.
-4. Add or update care tasks and record daily work. Field notes can be saved offline; other records currently need a connection.
+4. Add or update care tasks and record daily work. Supported forms queue offline and sync when signal returns; check the sync status before closing the browser.
 5. Add observed rainfall/temperature, scouting findings or spray records. When a cycle has a known expected harvest date, a recorded pre-harvest interval is checked against it.
-6. Record workers, hours, expenses, stock usage, harvests and sales, then review the cycle report and export or print it.
+6. Record workers, hours, split expenses, machinery jobs, stock usage, harvests and sales, then review the cycle report and export or print it.
+7. Upload a document or photo while online, create an export request in Farm settings, then download JSON or CSV. Exports include attachment metadata, not the files themselves.
+8. In Cycle economics, save an expected plan with verified values and cost lines. Review the generated downside cases, edit the monthly harvest shares in the Excel workbook if needed, and compare the plan with recorded results.

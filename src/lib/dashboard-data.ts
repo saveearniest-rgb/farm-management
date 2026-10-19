@@ -36,6 +36,8 @@ export async function getDashboardData(context: Context) {
     rawSprayRecords,
     auditEntries,
     rawSubsidies,
+    rawMachineJobs,
+    rawAttachments,
   ] = await Promise.all([
     db.landHolding.findMany({
       where: { farmId, archivedAt: null },
@@ -64,6 +66,7 @@ export async function getDashboardData(context: Context) {
       include: {
         stageTemplates: { orderBy: { sortOrder: "asc" } },
         careTemplates: true,
+        references: { orderBy: [{ kind: "asc" }, { name: "asc" }] },
       },
     }),
     db.cropCycle.findMany({
@@ -127,7 +130,10 @@ export async function getDashboardData(context: Context) {
           where: { farmId },
           orderBy: { spentAt: "desc" },
           take: 150,
-          include: { cycle: { include: { cropType: { select: { name: true } } } } },
+          include: {
+            cycle: { include: { cropType: { select: { name: true } } } },
+            allocations: { where: { farmId }, select: { cycleId: true, amount: true } },
+          },
         })
       : Promise.resolve([]),
     db.stockItem.findMany({
@@ -155,7 +161,7 @@ export async function getDashboardData(context: Context) {
       ? db.farmMember.findMany({
           where: { farmId },
           orderBy: { createdAt: "asc" },
-          include: { user: { select: { name: true, email: true } } },
+          include: { user: { select: { id: true, name: true, email: true } } },
         })
       : Promise.resolve([]),
     db.consentRecord.findMany({
@@ -166,7 +172,7 @@ export async function getDashboardData(context: Context) {
     db.dataRequest.findMany({
       where: { farmId, userId: context.user.id },
       orderBy: { requestedAt: "desc" },
-      select: { id: true, type: true, status: true, requestedAt: true, completedAt: true },
+      include: { subject: { select: { name: true, email: true } } },
     }),
     db.tenureDispute.findMany({
       where: { farmId },
@@ -223,6 +229,19 @@ export async function getDashboardData(context: Context) {
           take: 50,
         })
       : Promise.resolve([]),
+    isOwner
+        ? db.machineJob.findMany({
+            where: { farmId },
+            orderBy: { performedAt: "desc" },
+            take: 150,
+            include: { cycle: { include: { cropType: { select: { name: true } } } }, plot: { select: { name: true } } },
+          })
+        : Promise.resolve([]),
+    db.fileAttachment.findMany({
+        where: { farmId },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+    }),
   ]);
 
   const mapWorkEntry = (entry: (typeof rawWorkEntries)[number]) => ({
@@ -306,6 +325,13 @@ export async function getDashboardData(context: Context) {
         intervalDays: template.intervalDays,
         nameEn: template.nameEn,
         nameSw: template.nameSw,
+      })),
+      references: crop.references.map((reference) => ({
+        id: reference.id,
+        kind: reference.kind,
+        name: reference.name,
+        activeIngredient: reference.activeIngredient,
+        notes: reference.notes,
       })),
     })),
     cycles: rawCycles.map((cycle) => ({
@@ -445,7 +471,42 @@ export async function getDashboardData(context: Context) {
       notes: expense.notes,
       cycleId: expense.cycleId,
       cropName: expense.cycle?.cropType.name ?? null,
+      allocations: expense.allocations.map((allocation) => ({
+        cycleId: allocation.cycleId,
+        amount: numeric(allocation.amount) ?? 0,
+      })),
     })),
+    machineJobs: rawMachineJobs.map((job) => ({
+      id: job.id,
+      description: job.description,
+      cycleId: job.cycleId,
+      cropName: job.cycle?.cropType.name ?? null,
+      plotName: job.plot?.name ?? null,
+      hours: numeric(job.hours) ?? 0,
+      fuelCost: numeric(job.fuelCost) ?? 0,
+      hireCost: numeric(job.hireCost) ?? 0,
+      maintenanceCost: numeric(job.maintenanceCost) ?? 0,
+      currency: job.currency,
+      performedAt: iso(job.performedAt),
+    })),
+    attachments: rawAttachments.map((attachment) => {
+      const recordType = attachment.landHoldingId ? "holding"
+        : attachment.plotId ? "plot"
+          : attachment.cropTypeId ? "crop type"
+            : attachment.cycleId ? "crop cycle"
+              : "task";
+      const recordId = attachment.landHoldingId ?? attachment.plotId ??
+        attachment.cropTypeId ?? attachment.cycleId ?? attachment.taskId ?? "";
+      return {
+        id: attachment.id,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+        createdAt: iso(attachment.createdAt) ?? "",
+        recordType,
+        recordId,
+      };
+    }),
     stockItems: rawStockItems.map((item) => {
       const balance = item.movements.reduce((quantity, movement) => {
         const amount = numeric(movement.quantity) ?? 0;
@@ -480,6 +541,7 @@ export async function getDashboardData(context: Context) {
     suppliers: suppliers,
     members: members.map((member) => ({
       id: member.id,
+      userId: member.user.id,
       name: member.user.name,
       email: member.user.email,
       role: member.role,
@@ -490,7 +552,11 @@ export async function getDashboardData(context: Context) {
       withdrawnAt: iso(consent.withdrawnAt),
     })),
     dataRequests: dataRequests.map((request) => ({
-      ...request,
+      id: request.id,
+      type: request.type,
+      scope: request.scope,
+      status: request.status,
+      subject: request.subject ? `${request.subject.name} · ${request.subject.email}` : null,
       requestedAt: iso(request.requestedAt),
       completedAt: iso(request.completedAt),
     })),

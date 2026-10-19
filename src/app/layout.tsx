@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { PwaRegister } from "@/app/components/pwa-register";
 import "./globals.css";
 
@@ -18,10 +19,18 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
         {children}
         <PwaRegister />
+        <Script id="theme-preference" strategy="beforeInteractive">
+          {`try {
+            const theme = localStorage.getItem("shamba-theme");
+            if (theme === "dark") document.documentElement.dataset.theme = "dark";
+          } catch (error) {
+            console.error("Could not restore the saved appearance preference.", error);
+          }`}
+        </Script>
       </body>
     </html>
   );
