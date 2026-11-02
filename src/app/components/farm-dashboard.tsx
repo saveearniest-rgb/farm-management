@@ -1195,8 +1195,8 @@ function LabourSection({
                 ...data.animalGroups.map((group) => ({ value: `group:${group.id}`, label: `${group.name} · ${group.species}` })),
               ]}
             />
-            <FormTextArea label={locale === "sw" ? "Mgao wa gharama uliogawanywa (hiari)" : "Split allocations (optional)"} name="allocations" placeholder="cycle:cycle-id | 12000&#10;plot:plot-id | 5000&#10;animal:tag-id | 3000&#10;group:group-id | 4500" />
-            <p className="field-help field-wide">{locale === "sw" ? "Chagua mnyama/kikundi ili kugawa kiasi chote, au weka mgao wa mistari mingi. Kila mstari cycle:ID, plot:ID, animal:ID au group:ID | kiasi; jumla ilingane na gharama." : "Select an animal/group for the full amount, or enter split lines. Each line is cycle:ID, plot:ID, animal:ID or group:ID | amount; allocations must equal the expense total."}</p>
+            <FormTextArea label={locale === "sw" ? "Mgao wa gharama uliogawanywa (hiari)" : "Split allocations (optional)"} name="allocations" placeholder="cycle:cycle-id | 12000&#10;plot:plot-id | 5000&#10;animal:tag-id | 3000&#10;group:group-id | 4500&#10;product:milk | 2500" />
+            <p className="field-help field-wide">{locale === "sw" ? "Chagua mnyama/kikundi ili kugawa kiasi chote, au weka mgao wa mistari mingi. Tumia product:milk/meat/eggs/live_animal/manure/hides/breeding_service/other kwa gharama za mstari wa uzalishaji; jumla ilingane na gharama." : "Select an animal/group for the full amount, or enter split lines. Product-line syntax: product:milk, product:meat, product:eggs, product:live_animal, product:manure, product:hides, product:breeding_service or product:other | amount. Allocations must equal the expense total."}</p>
             <FormTextArea label={locale === "sw" ? "Maelezo" : "Notes"} name="notes" />
           </ActionForm>
         </section>}
@@ -1219,6 +1219,28 @@ function LabourSection({
             <FormField label={locale === "sw" ? "Tarehe ya ununuzi" : "Purchase date"} name="purchasedAt" type="date" />
             <FormField label={locale === "sw" ? `Gharama ya ununuzi (${data.farm.currency})` : `Purchase cost (${data.farm.currency})`} name="purchaseCost" type="number" min="0" step="0.01" />
             <FormField label={locale === "sw" ? "Muda wa matumizi (miezi)" : "Expected life (months)"} name="expectedLifeMonths" type="number" min="1" step="1" />
+            <FormSelect label={locale === "sw" ? "Mtaji wa uzalishaji" : "Capital investment"} name="isCapitalInvestment" options={[
+              { value: "false", label: locale === "sw" ? "Hapana" : "No" },
+              { value: "true", label: locale === "sw" ? "Ndiyo" : "Yes" },
+            ]} />
+            <FormSelect label={locale === "sw" ? "Sehemu ya shamba" : "Division"} name="division" required={false} options={[
+              { value: "CROPS", label: locale === "sw" ? "Mazao" : "Crops" },
+              { value: "ANIMALS", label: locale === "sw" ? "Mifugo" : "Animals" },
+              { value: "SHARED", label: locale === "sw" ? "Pamoja" : "Shared" },
+            ]} />
+            <FormSelect label={locale === "sw" ? "Mstari wa bidhaa za mifugo" : "Animal product line"} name="productLine" required={false} options={[
+              { value: "MILK", label: "Milk" },
+              { value: "MEAT", label: "Meat" },
+              { value: "EGGS", label: "Eggs" },
+              { value: "LIVE_ANIMAL", label: "Live animal" },
+              { value: "MANURE", label: "Manure" },
+              { value: "HIDES", label: "Hides" },
+              { value: "BREEDING_SERVICE", label: "Breeding service" },
+              { value: "OTHER", label: "Other" },
+            ]} />
+            <FormField label={locale === "sw" ? "Chanzo cha fedha" : "Funding source"} name="fundingSource" required={false} />
+            <FormField label={locale === "sw" ? "Thamani ya mabaki" : "Residual value"} name="salvageValue" type="number" min="0" step="0.01" required={false} />
+            <p className="field-help field-wide">{locale === "sw" ? "Makadirio ya uchakavu wa mstari mnyoofu ni kwa mipango tu, si ushauri wa uhasibu." : "Straight-line useful-life values are planning estimates only, not accounting advice."}</p>
             <FormSelect label={locale === "sw" ? "Hali" : "Status"} name="status" options={[
               { value: "ACTIVE", label: locale === "sw" ? "Inatumika" : "Active" },
               { value: "IDLE", label: locale === "sw" ? "Haitumiki kwa sasa" : "Idle" },

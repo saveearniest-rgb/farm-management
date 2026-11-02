@@ -87,6 +87,9 @@ export async function GET(request: Request) {
     animalBreedBenchmarks,
     animalTraitRecords,
     animalBreedingRecords,
+    animalSales,
+    animalSalePayments,
+    animalSalesForecasts,
   ] = await Promise.all([
     db.farm.findUnique({ where: { id: farmId } }),
     db.farmMember.findMany({ where: { farmId }, include: { user: { select: { id: true, name: true, email: true, locale: true, createdAt: true } } } }),
@@ -167,6 +170,9 @@ export async function GET(request: Request) {
     db.animalBreedBenchmark.findMany({ where: { farmId } }),
     db.animalTraitRecord.findMany({ where: { farmId } }),
     db.animalBreedingRecord.findMany({ where: { farmId } }),
+    db.animalSale.findMany({ where: { farmId } }),
+    db.animalSalePayment.findMany({ where: { farmId } }),
+    db.animalSalesForecast.findMany({ where: { farmId } }),
   ]);
 
   const exportData = {
@@ -223,6 +229,9 @@ export async function GET(request: Request) {
     animalBreedBenchmarks,
     animalTraitRecords,
     animalBreedingRecords,
+    animalSales,
+    animalSalePayments,
+    animalSalesForecasts,
   };
   const body = JSON.stringify(
     exportData,

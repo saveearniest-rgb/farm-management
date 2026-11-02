@@ -23,10 +23,21 @@ describe("parseExpenseAllocations", () => {
     });
   });
 
+  it("accepts farm animal product-line allocations", () => {
+    expect(parseExpenseAllocations("product:milk | 7.25\nproduct:BREEDING_SERVICE | 2.75", 10)).toEqual({
+      allocations: [
+        { animalProductLine: "MILK", amount: 7.25 },
+        { animalProductLine: "BREEDING_SERVICE", amount: 2.75 },
+      ],
+      error: null,
+    });
+  });
+
   it("rejects malformed, non-positive and unequal allocations", () => {
     expect(parseExpenseAllocations("cycle:c-1 | 9.99", 10).error).toContain("add up exactly");
     expect(parseExpenseAllocations("cycle:c-1 | 0", 10).error).toContain("positive");
     expect(parseExpenseAllocations("cycle:c-1 - 10", 10).error).toContain("Use one allocation");
     expect(parseExpenseAllocations("cycle:c-1 | 1.001", 1).error).toContain("Use one allocation");
+    expect(parseExpenseAllocations("product:unknown | 10", 10).error).toContain("Use one allocation");
   });
 });

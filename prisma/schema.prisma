@@ -171,6 +171,23 @@ enum AnimalBirthOutcome {
   UNKNOWN
 }
 
+enum AnimalProductLine {
+  MILK
+  MEAT
+  EGGS
+  LIVE_ANIMAL
+  MANURE
+  HIDES
+  BREEDING_SERVICE
+  OTHER
+}
+
+enum AssetDivision {
+  CROPS
+  ANIMALS
+  SHARED
+}
+
 enum DataRequestType {
   EXPORT
   DELETION
@@ -279,6 +296,9 @@ model Farm {
   animalBreedBenchmarks      AnimalBreedBenchmark[]
   animalTraitRecords         AnimalTraitRecord[]
   animalBreedingRecords      AnimalBreedingRecord[]
+  animalSales                AnimalSale[]
+  animalSalePayments         AnimalSalePayment[]
+  animalSalesForecasts       AnimalSalesForecast[]
 }
 
 model FarmMember {
@@ -609,15 +629,16 @@ model Expense {
 }
 
 model ExpenseAllocation {
-  id            String  @id @default(cuid())
-  farmId        String
-  expenseId     String
-  cycleId       String?
-  plotId        String?
-  animalId      String?
-  animalGroupId String?
-  amount        Decimal @db.Decimal(14, 2)
-  currency      String  @default("TZS")
+  id                String             @id @default(cuid())
+  farmId            String
+  expenseId         String
+  cycleId           String?
+  plotId            String?
+  animalId          String?
+  animalGroupId     String?
+  animalProductLine AnimalProductLine?
+  amount            Decimal            @db.Decimal(14, 2)
+  currency          String             @default("TZS")
 
   expense     Expense      @relation(fields: [expenseId], references: [id], onDelete: Cascade)
   cycle       CropCycle?   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
@@ -654,18 +675,23 @@ model MachineJob {
 }
 
 model Asset {
-  id                 String      @id @default(cuid())
-  farmId             String
-  name               String
-  type               String
-  purchasedAt        DateTime?
-  purchaseCost       Decimal?    @db.Decimal(14, 2)
-  currency           String      @default("TZS")
-  expectedLifeMonths Int?
-  status             AssetStatus @default(ACTIVE)
-  notes              String?
-  archivedAt         DateTime?
-  createdAt          DateTime    @default(now())
+  id                  String             @id @default(cuid())
+  farmId              String
+  name                String
+  type                String
+  purchasedAt         DateTime?
+  purchaseCost        Decimal?           @db.Decimal(14, 2)
+  currency            String             @default("TZS")
+  expectedLifeMonths  Int?
+  isCapitalInvestment Boolean            @default(false)
+  division            AssetDivision?
+  productLine         AnimalProductLine?
+  fundingSource       String?
+  salvageValue        Decimal?           @db.Decimal(14, 2)
+  status              AssetStatus        @default(ACTIVE)
+  notes               String?
+  archivedAt          DateTime?
+  createdAt           DateTime           @default(now())
 
   farm         Farm               @relation(fields: [farmId], references: [id], onDelete: Cascade)
   usages       AssetUsage[]
@@ -792,6 +818,71 @@ model Sale {
   @@index([farmId, cycleId, soldAt])
 }
 
+model AnimalSale {
+  id               String            @id @default(cuid())
+  farmId           String
+  productLine      AnimalProductLine
+  animalId         String?
+  animalGroupId    String?
+  soldAt           DateTime          @default(now())
+  quantity         Decimal           @db.Decimal(14, 4)
+  unit             String
+  price            Decimal           @db.Decimal(14, 2)
+  totalAmount      Decimal           @db.Decimal(14, 2)
+  amountReceived   Decimal           @default(0) @db.Decimal(14, 2)
+  paymentMethod    PaymentMethod?
+  paymentReference String?
+  currency         String            @default("TZS")
+  buyer            String?
+  notes            String?
+  createdAt        DateTime          @default(now())
+
+  farm        Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?             @relation(fields: [animalId], references: [id], onDelete: SetNull)
+  animalGroup AnimalGroup?        @relation(fields: [animalGroupId], references: [id], onDelete: SetNull)
+  payments    AnimalSalePayment[]
+
+  @@index([farmId, productLine, soldAt])
+  @@index([farmId, animalId, soldAt])
+  @@index([farmId, animalGroupId, soldAt])
+}
+
+model AnimalSalePayment {
+  id            String         @id @default(cuid())
+  farmId        String
+  animalSaleId  String
+  amount        Decimal        @db.Decimal(14, 2)
+  receivedAt    DateTime       @default(now())
+  paymentMethod PaymentMethod?
+  reference     String?
+  notes         String?
+  createdAt     DateTime       @default(now())
+
+  farm       Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animalSale AnimalSale @relation(fields: [animalSaleId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, receivedAt])
+  @@index([farmId, animalSaleId, receivedAt])
+}
+
+model AnimalSalesForecast {
+  id          String            @id @default(cuid())
+  farmId      String
+  productLine AnimalProductLine
+  plannedFor  DateTime
+  quantity    Decimal           @db.Decimal(14, 4)
+  unit        String
+  unitPrice   Decimal?          @db.Decimal(14, 2)
+  currency    String            @default("TZS")
+  notes       String?
+  createdAt   DateTime          @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, plannedFor])
+  @@index([farmId, productLine, plannedFor])
+}
+
 model StockItem {
   id                String          @id @default(cuid())
   farmId            String
@@ -894,6 +985,7 @@ model Animal {
   healthRecords      AnimalHealthRecord[]
   performanceRecords AnimalPerformanceRecord[]
   traitRecords       AnimalTraitRecord[]
+  sales              AnimalSale[]
   breedingAsDam      AnimalBreedingRecord[]    @relation("BreedingDam")
   breedingAsSire     AnimalBreedingRecord[]    @relation("BreedingSire")
 
@@ -980,6 +1072,7 @@ model AnimalGroup {
   healthRecords              AnimalHealthRecord[]
   performanceRecords         AnimalPerformanceRecord[]
   animalVaccinationSchedules AnimalVaccinationSchedule[]
+  sales                      AnimalSale[]
 
   @@unique([farmId, name])
   @@index([farmId, species, startDate])

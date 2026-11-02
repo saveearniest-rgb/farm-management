@@ -14,6 +14,9 @@ export async function getDashboardData(context: Context) {
   const db = tenantDb(farmId, context.user.id);
   const isOwner = context.role === "OWNER";
   const lastSevenDays = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
   const [
     holdings,
     plots,
@@ -55,6 +58,12 @@ export async function getDashboardData(context: Context) {
     rawAnimalLineage,
     rawAnimalTraitRecords,
     rawAnimalBreedingRecords,
+    rawAnimalSaleSummary,
+    rawAnimalProductExpenseSummary,
+    rawAnimalMonthSales,
+    rawAnimalMonthCosts,
+    rawAnimalSales,
+    rawAnimalSalesForecasts,
   ] = await Promise.all([
     db.landHolding.findMany({
       where: { farmId, archivedAt: null },
@@ -156,6 +165,7 @@ export async function getDashboardData(context: Context) {
                 plotId: true,
                 animalId: true,
                 animalGroupId: true,
+                animalProductLine: true,
                 amount: true,
                 animal: { select: { tagNumber: true } },
                 animalGroup: { select: { name: true } },
@@ -459,6 +469,55 @@ export async function getDashboardData(context: Context) {
         sire: { select: { id: true, tagNumber: true } },
       },
     }),
+    isOwner
+      ? db.animalSale.groupBy({
+          by: ["productLine"],
+          where: { farmId },
+          _sum: { quantity: true, totalAmount: true, amountReceived: true },
+        })
+      : Promise.resolve([]),
+    isOwner
+      ? db.expenseAllocation.groupBy({
+          by: ["animalProductLine"],
+          where: { farmId, animalProductLine: { not: null } },
+          _sum: { amount: true },
+        })
+      : Promise.resolve([]),
+    isOwner
+        ? db.animalSale.aggregate({
+            where: { farmId, soldAt: { gte: monthStart } },
+            _sum: { totalAmount: true, amountReceived: true },
+          })
+        : Promise.resolve(null),
+    isOwner
+        ? db.expenseAllocation.aggregate({
+            where: {
+              farmId,
+              animalProductLine: { not: null },
+              expense: { spentAt: { gte: monthStart } },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve(null),
+    isOwner
+      ? db.animalSale.findMany({
+          where: { farmId },
+          orderBy: { soldAt: "desc" },
+          take: 100,
+          include: {
+            animal: { select: { tagNumber: true } },
+            animalGroup: { select: { name: true } },
+            payments: { orderBy: { receivedAt: "desc" } },
+          },
+        })
+      : Promise.resolve([]),
+    isOwner
+      ? db.animalSalesForecast.findMany({
+          where: { farmId, plannedFor: { gte: new Date(new Date().toDateString()) } },
+          orderBy: { plannedFor: "asc" },
+          take: 100,
+        })
+      : Promise.resolve([]),
   ]);
 
   const mapWorkEntry = (entry: (typeof rawWorkEntries)[number]) => ({
@@ -486,6 +545,62 @@ export async function getDashboardData(context: Context) {
     memberships: context.memberships.map((member) => ({
       farm: member.farm,
       role: member.role,
+    })),
+    animalProductLineEconomics: rawAnimalSaleSummary.map((summary) => ({
+      productLine: summary.productLine,
+      quantitySold: numeric(summary._sum.quantity) ?? 0,
+      sales: numeric(summary._sum.totalAmount) ?? 0,
+      amountReceived: numeric(summary._sum.amountReceived) ?? 0,
+      costs: numeric(
+        rawAnimalProductExpenseSummary.find((cost) => cost.animalProductLine === summary.productLine)?._sum.amount,
+      ) ?? 0,
+    })).concat(rawAnimalProductExpenseSummary
+      .filter((cost) => cost.animalProductLine && !rawAnimalSaleSummary.some((sale) => sale.productLine === cost.animalProductLine))
+      .map((cost) => ({
+        productLine: cost.animalProductLine!,
+        quantitySold: 0,
+        sales: 0,
+        amountReceived: 0,
+        costs: numeric(cost._sum.amount) ?? 0,
+      }))),
+    animalMonthEconomics: {
+      sales: numeric(rawAnimalMonthSales?._sum.totalAmount) ?? 0,
+      amountReceived: numeric(rawAnimalMonthSales?._sum.amountReceived) ?? 0,
+      allocatedCosts: numeric(rawAnimalMonthCosts?._sum.amount) ?? 0,
+    },
+    animalSales: rawAnimalSales.map((sale) => ({
+      id: sale.id,
+      productLine: sale.productLine,
+      animalName: sale.animal?.tagNumber ?? sale.animalGroup?.name ?? null,
+      soldAt: iso(sale.soldAt),
+      quantity: numeric(sale.quantity) ?? 0,
+      unit: sale.unit,
+      price: numeric(sale.price) ?? 0,
+      totalAmount: numeric(sale.totalAmount) ?? 0,
+      amountReceived: numeric(sale.amountReceived) ?? 0,
+      paymentMethod: sale.paymentMethod,
+      paymentReference: sale.paymentReference,
+      currency: sale.currency,
+      buyer: sale.buyer,
+      notes: sale.notes,
+      payments: sale.payments.map((payment) => ({
+        id: payment.id,
+        amount: numeric(payment.amount) ?? 0,
+        receivedAt: iso(payment.receivedAt),
+        paymentMethod: payment.paymentMethod,
+        reference: payment.reference,
+        notes: payment.notes,
+      })),
+    })),
+    animalSalesForecasts: rawAnimalSalesForecasts.map((forecast) => ({
+      id: forecast.id,
+      productLine: forecast.productLine,
+      plannedFor: iso(forecast.plannedFor),
+      quantity: numeric(forecast.quantity) ?? 0,
+      unit: forecast.unit,
+      unitPrice: numeric(forecast.unitPrice),
+      currency: forecast.currency,
+      notes: forecast.notes,
     })),
     holdings: holdings.map((holding) => ({
       id: holding.id,
@@ -692,6 +807,7 @@ export async function getDashboardData(context: Context) {
         .map((allocation) =>
           allocation.animal?.tagNumber ??
           allocation.animalGroup?.name ??
+          allocation.animalProductLine ??
           allocation.cycle?.cropType.name ??
           allocation.plot?.name,
         )
@@ -701,6 +817,7 @@ export async function getDashboardData(context: Context) {
         plotId: allocation.plotId,
         animalId: allocation.animalId,
         animalGroupId: allocation.animalGroupId,
+        animalProductLine: allocation.animalProductLine,
         animalTag: allocation.animal?.tagNumber ?? null,
         animalGroupName: allocation.animalGroup?.name ?? null,
         amount: numeric(allocation.amount) ?? 0,
@@ -727,6 +844,11 @@ export async function getDashboardData(context: Context) {
       purchaseCost: isOwner ? numeric(asset.purchaseCost) : null,
       currency: asset.currency,
       expectedLifeMonths: asset.expectedLifeMonths,
+      isCapitalInvestment: isOwner && asset.isCapitalInvestment,
+      division: isOwner ? asset.division : null,
+      productLine: isOwner ? asset.productLine : null,
+      fundingSource: isOwner ? asset.fundingSource : null,
+      salvageValue: isOwner ? numeric(asset.salvageValue) : null,
       status: asset.status,
       notes: asset.notes,
     })),

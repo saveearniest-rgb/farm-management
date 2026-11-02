@@ -1,6 +1,6 @@
 "use server";
 
-import { AnimalBirthOutcome, AnimalBreedingMethod, AnimalDailyRecordType, AnimalEventType, AnimalHealthProductType, AnimalHealthRecordType, AnimalPerformanceType, AnimalPregnancyResult, AnimalPurpose, AnimalTrackingMode, AnimalTraitType, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, FigureLabel, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { AnimalBirthOutcome, AnimalBreedingMethod, AnimalDailyRecordType, AnimalEventType, AnimalHealthProductType, AnimalHealthRecordType, AnimalPerformanceType, AnimalPregnancyResult, AnimalProductLine, AnimalPurpose, AnimalTrackingMode, AnimalTraitType, AssetDivision, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, FigureLabel, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
@@ -1449,6 +1449,7 @@ export async function createExpenseAction(
     plotId?: string;
     animalId?: string;
     animalGroupId?: string;
+    animalProductLine?: AnimalProductLine;
     amount: number;
   }> = [];
   if (allocationText) {
@@ -1508,6 +1509,7 @@ export async function createExpenseAction(
               plotId: allocation.plotId ?? null,
               animalId: allocation.animalId ?? null,
               animalGroupId: allocation.animalGroupId ?? null,
+              animalProductLine: allocation.animalProductLine ?? null,
               amount: allocation.amount,
               currency: context.farm.currency,
             })),
@@ -1606,6 +1608,11 @@ export async function createAssetAction(
     purchasedAt: z.string().optional(),
     purchaseCost: optionalNumber,
     expectedLifeMonths: optionalNumber,
+    isCapitalInvestment: z.boolean(),
+    division: z.nativeEnum(AssetDivision).optional(),
+    productLine: z.nativeEnum(AnimalProductLine).optional(),
+    fundingSource: optionalText,
+    salvageValue: optionalNumber,
     status: z.nativeEnum(AssetStatus),
     notes: optionalText,
   }).safeParse({
@@ -1614,6 +1621,11 @@ export async function createAssetAction(
     purchasedAt: value(formData, "purchasedAt"),
     purchaseCost: value(formData, "purchaseCost"),
     expectedLifeMonths: value(formData, "expectedLifeMonths"),
+    isCapitalInvestment: ["on", "true", "1"].includes(value(formData, "isCapitalInvestment").toLowerCase()),
+    division: value(formData, "division") || undefined,
+    productLine: value(formData, "productLine") || undefined,
+    fundingSource: value(formData, "fundingSource"),
+    salvageValue: value(formData, "salvageValue"),
     status: value(formData, "status") || AssetStatus.ACTIVE,
     notes: value(formData, "notes"),
   });
@@ -1623,8 +1635,21 @@ export async function createAssetAction(
     (parsed.data.purchaseCost !== undefined && parsed.data.purchaseCost < 0) ||
     (parsed.data.expectedLifeMonths !== undefined &&
       (!Number.isInteger(parsed.data.expectedLifeMonths) || parsed.data.expectedLifeMonths <= 0))
+    || (parsed.data.salvageValue !== undefined &&
+      (parsed.data.salvageValue < 0 ||
+        (parsed.data.purchaseCost !== undefined && parsed.data.salvageValue > parsed.data.purchaseCost)))
+    || (parsed.data.isCapitalInvestment &&
+      (parsed.data.purchaseCost === undefined ||
+        parsed.data.purchaseCost <= 0 ||
+        !parsed.data.purchasedAt ||
+        parsed.data.expectedLifeMonths === undefined ||
+        !parsed.data.division ||
+        (parsed.data.division === AssetDivision.ANIMALS && !parsed.data.productLine)))
+    || (parsed.data.productLine !== undefined &&
+      parsed.data.division !== AssetDivision.ANIMALS &&
+      parsed.data.division !== AssetDivision.SHARED)
   ) {
-    return invalid("Enter an asset name and type, with valid optional purchase details.");
+    return invalid("Enter valid asset details. Capital investments need a purchase cost, useful life, division, and animal product line when applicable.");
   }
   try {
     await tenantDb(context.farm.id, context.user.id).asset.create({
@@ -1638,6 +1663,13 @@ export async function createAssetAction(
           : new Prisma.Decimal(parsed.data.purchaseCost),
         currency: context.farm.currency,
         expectedLifeMonths: parsed.data.expectedLifeMonths,
+        isCapitalInvestment: parsed.data.isCapitalInvestment,
+        division: parsed.data.division ?? null,
+        productLine: parsed.data.productLine ?? null,
+        fundingSource: parsed.data.fundingSource,
+        salvageValue: parsed.data.salvageValue === undefined
+          ? null
+          : new Prisma.Decimal(parsed.data.salvageValue),
         status: parsed.data.status,
         notes: parsed.data.notes,
       },
@@ -2439,6 +2471,9 @@ export async function recordAnimalEventAction(
   if (parsed.data.type === AnimalEventType.BREEDING) {
     return invalid("Record breeding through the genetics and breeding form.");
   }
+  if (parsed.data.type === AnimalEventType.SALE) {
+    return invalid("Record sales through Animal product sales to keep income and live-animal counts connected.");
+  }
   const occurredAt = optionalDate(parsed.data.occurredAt ?? "") ?? new Date();
   if (occurredAt.getTime() > Date.now()) return invalid("Animal events must not be dated in the future.");
   const isCountEvent = ["BIRTH", "PURCHASE", "SALE", "DEATH", "CULLED"].includes(parsed.data.type);
@@ -2515,6 +2550,297 @@ export async function recordAnimalEventAction(
   }
   revalidatePath("/");
   return { message: "Animal event recorded.", success: true };
+}
+
+export async function recordAnimalSaleAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can record animal sales.");
+
+  const parsed = z.object({
+    productLine: z.nativeEnum(AnimalProductLine),
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    soldAt: z.string().optional(),
+    quantity: positiveNumber,
+    unit: z.string().trim().min(1).max(30),
+    price: z.coerce.number().finite().nonnegative(),
+    amountReceived: z.coerce.number().finite().nonnegative(),
+    paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+    paymentReference: optionalText,
+    buyer: optionalText,
+    notes: optionalText,
+  }).safeParse({
+    productLine: value(formData, "productLine"),
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    soldAt: value(formData, "soldAt"),
+    quantity: value(formData, "quantity"),
+    unit: value(formData, "unit"),
+    price: value(formData, "price"),
+    amountReceived: value(formData, "amountReceived") || "0",
+    paymentMethod: value(formData, "paymentMethod") || undefined,
+    paymentReference: value(formData, "paymentReference"),
+    buyer: value(formData, "buyer"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(parsed.data.soldAt ?? "")) {
+    return invalid("Enter a product line, positive quantity, price, and valid sale date.");
+  }
+  const soldAt = optionalDate(parsed.data.soldAt ?? "") ?? new Date();
+  if (soldAt.getTime() > Date.now()) return invalid("Animal sales cannot be dated in the future.");
+  const liveSale = parsed.data.productLine === AnimalProductLine.LIVE_ANIMAL;
+  if (liveSale && Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId)) {
+    return invalid("A live-animal sale must identify exactly one tagged animal or head-count group.");
+  }
+  if (parsed.data.animalId && parsed.data.animalGroupId) {
+    return invalid("Choose one animal or group, not both.");
+  }
+  const total = new Prisma.Decimal(parsed.data.quantity)
+    .mul(new Prisma.Decimal(parsed.data.price))
+    .toDecimalPlaces(2);
+  const amountReceived = new Prisma.Decimal(parsed.data.amountReceived);
+  if (amountReceived.greaterThan(total)) {
+    return invalid("Amount received cannot exceed the recorded sale total.");
+  }
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const [animal, group] = await Promise.all([
+    parsed.data.animalId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.animalId, archivedAt: null },
+          select: { id: true, status: true },
+        })
+      : null,
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, archivedAt: null },
+          select: { id: true, trackingMode: true, startDate: true },
+        })
+      : null,
+  ]);
+  if (parsed.data.animalId && (!animal || animal.status !== "ACTIVE")) {
+    return invalid("Choose an active animal from this farm.");
+  }
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  if (liveSale && animal && parsed.data.quantity !== 1) {
+    return invalid("A tagged live-animal sale must have a quantity of one head.");
+  }
+  if (liveSale && group &&
+      (group.trackingMode !== AnimalTrackingMode.HEAD_COUNT ||
+        !Number.isInteger(parsed.data.quantity) ||
+        soldAt < group.startDate)) {
+    return invalid("A group live-animal sale needs a head-count group, whole-head quantity, and valid date.");
+  }
+
+  try {
+    await farmDb.$transaction(async (tx) => {
+      if (liveSale && group) {
+        const latestGroup = await tx.animalGroup.findFirst({
+          where: { id: group.id, farmId: context.farm.id, archivedAt: null },
+          include: { events: { select: { type: true, quantity: true } } },
+        });
+        if (!latestGroup ||
+          parsed.data.quantity > calculateAnimalGroupCount(latestGroup.startingCount, latestGroup.events)) {
+          throw new Error("GROUP_COUNT_EXCEEDED");
+        }
+      }
+      if (liveSale && animal) {
+        const activeAnimal = await tx.animal.findFirst({
+          where: { id: animal.id, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+          select: { id: true },
+        });
+        if (!activeAnimal) throw new Error("ANIMAL_NOT_ACTIVE");
+      }
+      const sale = await tx.animalSale.create({
+        data: {
+          farmId: context.farm.id,
+          productLine: parsed.data.productLine,
+          animalId: animal?.id ?? null,
+          animalGroupId: group?.id ?? null,
+          soldAt,
+          quantity: new Prisma.Decimal(parsed.data.quantity),
+          unit: parsed.data.unit,
+          price: new Prisma.Decimal(parsed.data.price),
+          totalAmount: total,
+          amountReceived,
+          paymentMethod: parsed.data.paymentMethod ?? null,
+          paymentReference: parsed.data.paymentReference,
+          currency: context.farm.currency,
+          buyer: parsed.data.buyer,
+          notes: parsed.data.notes,
+        },
+        select: { id: true },
+      });
+      if (amountReceived.greaterThan(0)) {
+        await tx.animalSalePayment.create({
+          data: {
+            farmId: context.farm.id,
+            animalSaleId: sale.id,
+            amount: amountReceived,
+            receivedAt: soldAt,
+            paymentMethod: parsed.data.paymentMethod ?? null,
+            reference: parsed.data.paymentReference,
+          },
+        });
+      }
+      if (liveSale) {
+        await tx.animalEvent.create({
+          data: {
+            farmId: context.farm.id,
+            animalId: animal?.id ?? null,
+            animalGroupId: group?.id ?? null,
+            type: AnimalEventType.SALE,
+            occurredAt: soldAt,
+            quantity: animal ? 1 : parsed.data.quantity,
+            notes: parsed.data.notes,
+          },
+        });
+        if (animal) {
+          await tx.animal.update({
+            where: { id: animal.id, farmId: context.farm.id },
+            data: { status: "SOLD" },
+          });
+        }
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "GROUP_COUNT_EXCEEDED") {
+      return invalid("The live-animal sale quantity cannot exceed the group's current count.");
+    }
+    if (error instanceof Error && error.message === "ANIMAL_NOT_ACTIVE") {
+      return invalid("Only an active tagged animal can be sold.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal sale recorded. Amount received and outstanding balance are saved as farm records only.", success: true };
+}
+
+export async function recordAnimalSalePaymentAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can record sale payments.");
+  const parsed = z.object({
+    saleId: z.string().min(1),
+    amount: positiveNumber,
+    receivedAt: z.string().optional(),
+    paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+    reference: optionalText,
+    notes: optionalText,
+  }).safeParse({
+    saleId: value(formData, "saleId"),
+    amount: value(formData, "amount"),
+    receivedAt: value(formData, "receivedAt"),
+    paymentMethod: value(formData, "paymentMethod") || undefined,
+    reference: value(formData, "reference"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(parsed.data.receivedAt ?? "")) {
+    return invalid("Enter a positive payment amount and valid received date.");
+  }
+  const receivedAt = optionalDate(parsed.data.receivedAt ?? "") ?? new Date();
+  if (receivedAt.getTime() > Date.now()) return invalid("Payments cannot be dated in the future.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  try {
+    await farmDb.$transaction(async (tx) => {
+      const sale = await tx.animalSale.findFirst({
+        where: { id: parsed.data.saleId, farmId: context.farm.id },
+        select: { id: true, totalAmount: true, amountReceived: true },
+      });
+      if (!sale) throw new Error("ANIMAL_SALE_NOT_FOUND");
+      const amount = new Prisma.Decimal(parsed.data.amount);
+      if (amount.greaterThan(sale.totalAmount.minus(sale.amountReceived))) {
+        throw new Error("PAYMENT_EXCEEDS_BALANCE");
+      }
+      await tx.animalSalePayment.create({
+        data: {
+          farmId: context.farm.id,
+          animalSaleId: sale.id,
+          amount,
+          receivedAt,
+          paymentMethod: parsed.data.paymentMethod ?? null,
+          reference: parsed.data.reference,
+          notes: parsed.data.notes,
+        },
+      });
+      await tx.animalSale.update({
+        where: { id: sale.id, farmId: context.farm.id },
+        data: { amountReceived: { increment: amount } },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "ANIMAL_SALE_NOT_FOUND") {
+      return invalid("Choose an animal sale from this farm.");
+    }
+    if (error instanceof Error && error.message === "PAYMENT_EXCEEDS_BALANCE") {
+      return invalid("The payment cannot exceed the sale's outstanding balance.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Sale payment recorded.", success: true };
+}
+
+export async function createAnimalSalesForecastAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can create animal sales forecasts.");
+  const parsed = z.object({
+    productLine: z.nativeEnum(AnimalProductLine),
+    plannedFor: z.string().min(1),
+    quantity: positiveNumber,
+    unit: z.string().trim().min(1).max(30),
+    unitPrice: optionalNumber,
+    notes: optionalText,
+  }).safeParse({
+    productLine: value(formData, "productLine"),
+    plannedFor: value(formData, "plannedFor"),
+    quantity: value(formData, "quantity"),
+    unit: value(formData, "unit"),
+    unitPrice: value(formData, "unitPrice"),
+    notes: value(formData, "notes"),
+  });
+  if (!parsed.success || dateError(parsed.data.plannedFor) ||
+      (parsed.data.unitPrice !== undefined && parsed.data.unitPrice < 0)) {
+    return invalid("Enter a product line, future planning date, positive quantity and optional non-negative unit price.");
+  }
+  const plannedFor = optionalDate(parsed.data.plannedFor);
+  if (!plannedFor || plannedFor.getTime() < new Date(new Date().toDateString()).getTime()) {
+    return invalid("Forecast dates must be today or later.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalSalesForecast.create({
+      data: {
+        farmId: context.farm.id,
+        productLine: parsed.data.productLine,
+        plannedFor,
+        quantity: new Prisma.Decimal(parsed.data.quantity),
+        unit: parsed.data.unit,
+        unitPrice: parsed.data.unitPrice === undefined ? null : new Prisma.Decimal(parsed.data.unitPrice),
+        currency: context.farm.currency,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal sales forecast saved.", success: true };
 }
 
 export async function saveFeedRationAction(

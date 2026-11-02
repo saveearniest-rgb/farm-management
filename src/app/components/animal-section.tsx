@@ -9,6 +9,7 @@ import {
   createAnimalAction,
   createAnimalGroupAction,
   createAnimalHealthProductAction,
+  createAnimalSalesForecastAction,
   createAnimalVaccinationScheduleAction,
   recordAnimalHealthAction,
   recordAnimalHealthCaseAction,
@@ -16,6 +17,8 @@ import {
   recordAnimalBreedingAction,
   recordAnimalEventAction,
   recordAnimalPerformanceAction,
+  recordAnimalSalePaymentAction,
+  recordAnimalSaleAction,
   recordAnimalTraitAction,
   resolveAnimalHealthCaseAction,
   saveAnimalSpeciesProfileAction,
@@ -40,7 +43,6 @@ const eventTypes = [
   "PURCHASE",
   "WEANING",
   "MOVE",
-  "SALE",
   "DEATH",
   "CULLED",
   "OTHER",
@@ -54,6 +56,30 @@ const sourceLabels = ["BENCHMARK", "PLACEHOLDER_BENCHMARK", "LOCAL_QUOTE", "YOUR
 const pregnancyResults = ["POSITIVE", "NEGATIVE", "INCONCLUSIVE"];
 const birthOutcomes = ["LIVE", "STILLBORN", "ABORTION", "UNKNOWN"];
 const breedingMethods = ["NATURAL", "ARTIFICIAL_INSEMINATION"];
+const animalProductLines = [
+  "MILK",
+  "MEAT",
+  "EGGS",
+  "LIVE_ANIMAL",
+  "MANURE",
+  "HIDES",
+  "BREEDING_SERVICE",
+  "OTHER",
+] as const;
+
+function productLineLabel(productLine: string, locale: Locale) {
+  const sw: Record<string, string> = {
+    MILK: "Maziwa",
+    MEAT: "Nyama",
+    EGGS: "Mayai",
+    LIVE_ANIMAL: "Mnyama hai",
+    MANURE: "Samadi",
+    HIDES: "Ngozi",
+    BREEDING_SERVICE: "Huduma za uzalishaji",
+    OTHER: "Nyingine",
+  };
+  return locale === "sw" ? sw[productLine] ?? productLine : productLine.toLowerCase().replaceAll("_", " ");
+}
 
 function eventLabel(type: string, locale: Locale) {
   const sw: Record<string, string> = {
@@ -294,6 +320,78 @@ export function AnimalSection({
     });
   });
   const healthTypeLabel = (type: string) => type.toLowerCase().replaceAll("_", " ");
+  const recentThreshold = nowMs - 30 * 86_400_000;
+  const recentEvents = eventRows.filter((event) =>
+    event.occurredAt && new Date(event.occurredAt).getTime() >= recentThreshold,
+  );
+  const recentBirths = recentEvents
+    .filter((event) => event.type === "BIRTH")
+    .reduce((sum, event) => sum + (event.quantity ?? 1), 0);
+  const recentLosses = recentEvents
+    .filter((event) => event.type === "DEATH" || event.type === "CULLED")
+    .reduce((sum, event) => sum + (event.quantity ?? 1), 0);
+  const recentMilkEggs = data.animalDailyRecords.filter((record) =>
+    (record.type === "MILK" || record.type === "EGGS") &&
+    record.recordedAt && new Date(record.recordedAt).getTime() >= recentThreshold,
+  );
+  const upcomingBirths = data.animalBreedingRecords.filter((record) =>
+    record.expectedBirthAt &&
+    new Date(record.expectedBirthAt).getTime() >= nowMs &&
+    new Date(record.expectedBirthAt).getTime() <= nowMs + 30 * 86_400_000,
+  );
+  const animalCapitalAssets = data.assets.filter((asset) =>
+    asset.isCapitalInvestment &&
+    (asset.division === "ANIMALS" || asset.division === "SHARED") &&
+    asset.productLine,
+  );
+  const monthlyCapitalEstimate = animalCapitalAssets.reduce((sum, asset) =>
+    sum + (asset.productLine && asset.purchaseCost !== null && asset.expectedLifeMonths
+      ? Math.max(0, (asset.purchaseCost - (asset.salvageValue ?? 0)) / asset.expectedLifeMonths)
+      : 0), 0);
+  const minimumFeedDaysRemaining = feedPlans
+    .map((plan) => plan.daysRemaining)
+    .filter((days): days is number => days !== null)
+    .sort((a, b) => a - b)[0] ?? null;
+  const capitalCostsByLine = new Map<(typeof animalProductLines)[number], number>();
+  const investmentValueByLine = new Map<(typeof animalProductLines)[number], number>();
+  for (const asset of animalCapitalAssets) {
+    if (!asset.productLine || asset.purchaseCost === null || !asset.expectedLifeMonths) continue;
+    const monthlyCost = Math.max(0, (asset.purchaseCost - (asset.salvageValue ?? 0)) / asset.expectedLifeMonths);
+    const elapsedMonths = asset.purchasedAt
+      ? Math.max(0, (nowMs - new Date(asset.purchasedAt).getTime()) / (30.4375 * 86_400_000))
+      : 0;
+    const capitalCostToDate = monthlyCost * Math.min(asset.expectedLifeMonths, elapsedMonths);
+    capitalCostsByLine.set(asset.productLine, (capitalCostsByLine.get(asset.productLine) ?? 0) + capitalCostToDate);
+    investmentValueByLine.set(asset.productLine, (investmentValueByLine.get(asset.productLine) ?? 0) + asset.purchaseCost);
+  }
+  const productEconomics = data.animalProductLineEconomics.map((row) => ({
+    ...row,
+    capitalCost: capitalCostsByLine.get(row.productLine) ?? 0,
+    investment: investmentValueByLine.get(row.productLine) ?? 0,
+  }));
+  for (const [productLine, capitalCost] of capitalCostsByLine) {
+    if (!productEconomics.some((row) => row.productLine === productLine)) {
+      productEconomics.push({
+        productLine,
+        quantitySold: 0,
+        sales: 0,
+        amountReceived: 0,
+        costs: 0,
+        capitalCost,
+        investment: investmentValueByLine.get(productLine) ?? 0,
+      });
+    }
+  }
+  const economicsTotals = productEconomics.reduce((totals, row) => ({
+    sales: totals.sales + row.sales,
+    directCosts: totals.directCosts + row.costs,
+    capitalCosts: totals.capitalCosts + row.capitalCost,
+    receivable: totals.receivable + Math.max(0, row.sales - row.amountReceived),
+    investment: totals.investment + row.investment,
+  }), { sales: 0, directCosts: 0, capitalCosts: 0, receivable: 0, investment: 0 });
+  const forecastWindow = data.animalSalesForecasts.filter((forecast) =>
+    forecast.plannedFor && new Date(forecast.plannedFor).getTime() <= nowMs + 90 * 86_400_000,
+  );
 
   return (
     <div className="dashboard-content">
@@ -308,6 +406,130 @@ export function AnimalSection({
           </p>
         </div>
       </div>
+
+      <section className="panel data-panel">
+        <div className="panel-header">
+          <div>
+            <h3>{sw ? "Muhtasari na mpango wa mifugo" : "Animal dashboard and planning"}</h3>
+            <p>{sw ? "Takwimu zinatokana na rekodi za shamba; gharama za mstari wa bidhaa hujumuisha mgao uliowekwa pekee." : "Figures come from farm records; product-line costs include only expenses explicitly allocated to that line."}</p>
+          </div>
+        </div>
+        <div className="plan-kpi-grid">
+          <div className="plan-kpi"><span>{sw ? "Mifugo hai" : "Active animals"}</span><strong>{number(data.animals.filter((animal) => animal.status === "ACTIVE").length + groupsWithCounts.filter((group) => group.trackingMode === "HEAD_COUNT").reduce((sum, group) => sum + group.currentCount, 0), 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Waliozaliwa siku 30" : "Births · last 30 days"}</span><strong>{number(recentBirths, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Vifo/kuondolewa siku 30" : "Deaths/culls · last 30 days"}</span><strong>{number(recentLosses, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Maziwa yaliyorekodiwa · siku 30" : "Recorded milk · last 30 days"}</span><strong>{number(recentMilkEggs.filter((record) => record.type === "MILK").reduce((sum, record) => sum + (record.quantity ?? 0), 0))}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Mayai yaliyorekodiwa · siku 30" : "Recorded eggs · last 30 days"}</span><strong>{number(recentMilkEggs.filter((record) => record.type === "EGGS").reduce((sum, record) => sum + (record.quantity ?? 0), 0))}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Chanjo zilizochelewa" : "Overdue vaccination reminders"}</span><strong>{number(scheduleReminders.filter((reminder) => reminder.overdue && !reminder.complete).length, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Matukio ya uzazi siku 30 zijazo" : "Expected births · next 30 days"}</span><strong>{number(upcomingBirths.length, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Kesi za afya zilizo wazi" : "Open health cases"}</span><strong>{number(data.animalHealthCases.filter((healthCase) => !healthCase.resolvedAt).length, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Siku za chakula zilizobaki (makadirio)" : "Feed days remaining (estimate)"}</span><strong>{minimumFeedDaysRemaining === null ? "—" : number(minimumFeedDaysRemaining)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Vipindi vya kusubiri vinavyoendelea" : "Active withdrawal periods"}</span><strong>{number(activeWithdrawalRecords.length, 0)}</strong></div>
+          <div className="plan-kpi"><span>{sw ? "Makadirio ya mtaji kwa mwezi" : "Estimated capital cost / month"}</span><strong>{number(monthlyCapitalEstimate)} {data.farm.currency}</strong></div>
+        </div>
+        {isOwner && (
+          <>
+            <div className="plan-kpi-grid">
+              <div className="plan-kpi"><span>{sw ? "Mauzo mwezi huu" : "Sales this month"}</span><strong>{number(data.animalMonthEconomics.sales)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Malipo yaliyorekodiwa mwezi huu" : "Amount received this month"}</span><strong>{number(data.animalMonthEconomics.amountReceived)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Gharama zilizogawiwa mwezi huu" : "Allocated costs this month"}</span><strong>{number(data.animalMonthEconomics.allocatedCosts)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Mchango uliorekodiwa kabla ya mtaji" : "Recorded contribution before capital"}</span><strong>{number(data.animalMonthEconomics.sales - data.animalMonthEconomics.allocatedCosts)} {data.farm.currency}</strong></div>
+            </div>
+            <div className="plan-kpi-grid">
+              <div className="plan-kpi"><span>{sw ? "Mauzo yaliyorekodiwa (jumla)" : "Recorded sales (all time)"}</span><strong>{number(economicsTotals.sales)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Malipo yaliyorekodiwa" : "Amount received (recorded)"}</span><strong>{number(economicsTotals.sales - economicsTotals.receivable)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Salio linalodaiwa" : "Outstanding receivable"}</span><strong>{number(economicsTotals.receivable)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Gharama za moja kwa moja zilizogawiwa" : "Allocated direct costs"}</span><strong>{number(economicsTotals.directCosts)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Uchakavu wa mtaji uliokadiriwa" : "Estimated capital cost to date"}</span><strong>{number(economicsTotals.capitalCosts)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Mauzo ukilinganisha na gharama zilizorekodiwa" : "Recorded contribution after costs"}</span><strong>{number(economicsTotals.sales - economicsTotals.directCosts - economicsTotals.capitalCosts)} {data.farm.currency}</strong></div>
+              <div className="plan-kpi"><span>{sw ? "Mtaji wa mifugo uliosajiliwa" : "Registered animal investment"}</span><strong>{number(economicsTotals.investment)} {data.farm.currency}</strong></div>
+            </div>
+            <p className="field-help">{sw ? "Thamani za uchakavu ni makadirio ya mipango ya mstari mnyoofu tu, si ushauri wa uhasibu." : "Straight-line useful-life amounts are planning estimates only, not accounting advice."}</p>
+          </>
+        )}
+      </section>
+
+      {isOwner && <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>{sw ? "Mauzo ya bidhaa za mifugo" : "Animal product sales"}</h3>
+            <p>{sw ? "Hifadhi mapato, kiasi kilichopokelewa na salio bila kuchakata malipo." : "Record income, amount received and balance due; no payment is processed by the app."}</p>
+          </div>
+        </div>
+        <ActionForm action={recordAnimalSaleAction} submitLabel={sw ? "Rekodi mauzo" : "Record sale"} className="form-grid">
+          <FormSelect label={sw ? "Mstari wa bidhaa" : "Product line"} name="productLine" options={animalProductLines.map((line) => ({ value: line, label: productLineLabel(line, locale) }))} />
+          <FormSelect label={sw ? "Mnyama (hiari; lazima kwa mnyama hai)" : "Animal (optional; required for live-animal sales)"} name="animalId" required={false} options={animalOptions.filter((option) => data.animals.find((animal) => animal.id === option.value)?.status === "ACTIVE")} />
+          <FormSelect label={sw ? "Kikundi (hiari; lazima kwa mauzo ya kundi la wanyama hai)" : "Group (optional; required for head-count live sales)"} name="animalGroupId" required={false} options={headCountGroupOptions} />
+          <FormField label={sw ? "Tarehe ya mauzo" : "Sale date"} name="soldAt" type="date" />
+          <FormField label={sw ? "Kiasi" : "Quantity"} name="quantity" type="number" min="0.0001" step="0.0001" required />
+          <FormField label={sw ? "Kipimo" : "Unit"} name="unit" placeholder="litre, kg, tray, head" required />
+          <FormField label={sw ? "Bei kwa kipimo" : "Price per unit"} name="price" type="number" min="0" step="0.01" required />
+          <FormField label={sw ? `Kiasi kilichopokelewa (${data.farm.currency})` : `Amount received (${data.farm.currency})`} name="amountReceived" type="number" min="0" step="0.01" defaultValue="0" />
+          <FormSelect label={sw ? "Njia ya malipo iliyorekodiwa" : "Recorded payment method"} name="paymentMethod" required={false} options={[
+            { value: "CASH", label: sw ? "Taslimu" : "Cash" },
+            { value: "BANK", label: sw ? "Benki" : "Bank" },
+            { value: "MOBILE_MONEY", label: sw ? "Pesa kwa simu" : "Mobile money" },
+          ]} />
+          <FormField label={sw ? "Mnunuzi" : "Buyer"} name="buyer" required={false} />
+          <FormField label={sw ? "Rejea ya malipo (hiari)" : "Payment reference (optional)"} name="paymentReference" required={false} />
+          <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
+        </ActionForm>
+        <div className="table-scroll">
+          {productEconomics.length > 0 && <table><thead><tr><th>{sw ? "Bidhaa" : "Product line"}</th><th>{sw ? "Kiasi kilichouzwa" : "Quantity sold"}</th><th>{sw ? "Mauzo" : "Sales"}</th><th>{sw ? "Gharama za moja kwa moja" : "Direct costs"}</th><th>{sw ? "Mtaji uliokadiriwa" : "Estimated capital cost"}</th><th>{sw ? "Margin iliyorekodiwa" : "Recorded margin"}</th><th>{sw ? "Salio" : "Receivable"}</th></tr></thead><tbody>
+            {productEconomics.map((row) => <tr key={row.productLine}><td>{productLineLabel(row.productLine, locale)}</td><td>{number(row.quantitySold)}</td><td>{number(row.sales)} {data.farm.currency}</td><td>{number(row.costs)} {data.farm.currency}</td><td>{number(row.capitalCost)} {data.farm.currency}</td><td>{number(row.sales - row.costs - row.capitalCost)} {data.farm.currency}</td><td>{number(Math.max(0, row.sales - row.amountReceived))} {data.farm.currency}</td></tr>)}
+          </tbody></table>}
+          {data.animalSales.length > 0 ? <table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Bidhaa" : "Product"}</th><th>{sw ? "Mnyama/kikundi" : "Animal/group"}</th><th>{sw ? "Kiasi" : "Quantity"}</th><th>{sw ? "Jumla" : "Total"}</th><th>{sw ? "Imepokelewa" : "Received"}</th><th>{sw ? "Inayodaiwa" : "Outstanding"}</th><th>{sw ? "Malipo" : "Payment history"}</th><th>{sw ? "Rekodi malipo" : "Record payment"}</th></tr></thead><tbody>
+            {data.animalSales.map((sale) => <tr key={sale.id}><td>{date(sale.soldAt)}</td><td>{productLineLabel(sale.productLine, locale)}</td><td>{sale.animalName ?? "—"}</td><td>{number(sale.quantity)} {sale.unit}</td><td>{number(sale.totalAmount)} {sale.currency}</td><td>{number(sale.amountReceived)} {sale.currency}</td><td>{number(Math.max(0, sale.totalAmount - sale.amountReceived))} {sale.currency}</td><td>{sale.payments.map((payment) => `${date(payment.receivedAt)}: ${number(payment.amount)}`).join(", ") || "—"}</td><td>{sale.totalAmount > sale.amountReceived && <ActionForm action={recordAnimalSalePaymentAction} submitLabel={sw ? "Ongeza" : "Add payment"} className="animal-row-action">
+              <input name="saleId" type="hidden" value={sale.id} />
+              <FormField label={sw ? "Kiasi" : "Amount"} name="amount" type="number" min="0.01" step="0.01" required />
+              <FormField label={sw ? "Tarehe" : "Date"} name="receivedAt" type="date" />
+              <FormSelect label={sw ? "Njia" : "Method"} name="paymentMethod" required={false} options={[
+                { value: "CASH", label: sw ? "Taslimu" : "Cash" },
+                { value: "BANK", label: sw ? "Benki" : "Bank" },
+                { value: "MOBILE_MONEY", label: sw ? "Pesa kwa simu" : "Mobile money" },
+              ]} />
+              <FormField label={sw ? "Rejea" : "Reference"} name="reference" required={false} />
+            </ActionForm>}</td></tr>)}
+          </tbody></table> : <p className="field-help">{sw ? "Bado hakuna mauzo yaliyorekodiwa." : "No animal sales recorded yet."}</p>}
+        </div>
+      </section>}
+
+      {isOwner && <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>{sw ? "Mpango wa mauzo ya mifugo" : "Animal sales forecast"}</h3>
+            <p>{sw ? "Makadirio haya ni mpango uliowekwa na shamba, si mauzo halisi au kigezo cha nje." : "These are farm-entered forecasts, not actual sales or external benchmarks."}</p>
+          </div>
+        </div>
+        <ActionForm action={createAnimalSalesForecastAction} submitLabel={sw ? "Hifadhi utabiri" : "Save forecast"} className="form-grid">
+          <FormSelect label={sw ? "Mstari wa bidhaa" : "Product line"} name="productLine" options={animalProductLines.map((line) => ({ value: line, label: productLineLabel(line, locale) }))} />
+          <FormField label={sw ? "Tarehe iliyopangwa" : "Planned date"} name="plannedFor" type="date" required />
+          <FormField label={sw ? "Kiasi kinachotarajiwa" : "Expected quantity"} name="quantity" type="number" min="0.0001" step="0.0001" required />
+          <FormField label={sw ? "Kipimo" : "Unit"} name="unit" placeholder="litre, kg, tray, head" required />
+          <FormField label={sw ? `Bei inayotarajiwa (${data.farm.currency})` : `Expected unit price (${data.farm.currency})`} name="unitPrice" type="number" min="0" step="0.01" required={false} />
+          <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
+        </ActionForm>
+        {forecastWindow.length > 0 ? <div className="table-scroll"><table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Bidhaa" : "Product line"}</th><th>{sw ? "Kiasi" : "Quantity"}</th><th>{sw ? "Mapato yanayokadiriwa" : "Indicative revenue"}</th></tr></thead><tbody>
+          {forecastWindow.map((forecast) => <tr key={forecast.id}><td>{date(forecast.plannedFor)}</td><td>{productLineLabel(forecast.productLine, locale)}</td><td>{number(forecast.quantity)} {forecast.unit}</td><td>{forecast.unitPrice === null ? "—" : `${number(forecast.quantity * forecast.unitPrice)} ${forecast.currency}`}</td></tr>)}
+        </tbody></table></div> : <p className="field-help">{sw ? "Hakuna utabiri wa mauzo ndani ya siku 90." : "No sales forecasts are scheduled within the next 90 days."}</p>}
+      </section>}
+
+      {isOwner && animalCapitalAssets.length > 0 && <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>{sw ? "Uwekezaji wa mtaji wa mifugo" : "Animal capital investments"}</h3>
+            <p>{sw ? "Taarifa hizi zinatumia rejista ileile ya vifaa; gharama ya mwezi ni makadirio ya mipango ya uchakavu wa mstari mnyoofu." : "These investments reuse the shared asset register; monthly amounts are straight-line planning estimates only."}</p>
+          </div>
+        </div>
+        <div className="table-scroll"><table><thead><tr><th>{sw ? "Kifaa" : "Asset"}</th><th>{sw ? "Bidhaa" : "Product line"}</th><th>{sw ? "Gharama ya ununuzi" : "Purchase cost"}</th><th>{sw ? "Chanzo cha fedha" : "Funding source"}</th><th>{sw ? "Makadirio ya mwezi" : "Monthly estimate"}</th></tr></thead><tbody>
+          {animalCapitalAssets.map((asset) => {
+            const monthlyEstimate = asset.purchaseCost !== null && asset.expectedLifeMonths
+              ? Math.max(0, (asset.purchaseCost - (asset.salvageValue ?? 0)) / asset.expectedLifeMonths)
+              : null;
+            return <tr key={asset.id}><td>{asset.name}</td><td>{asset.productLine ? productLineLabel(asset.productLine, locale) : "—"}</td><td>{asset.purchaseCost === null ? "—" : `${number(asset.purchaseCost)} ${asset.currency}`}</td><td>{asset.fundingSource || "—"}</td><td>{monthlyEstimate === null ? "—" : `${number(monthlyEstimate)} ${asset.currency}`}</td></tr>;
+          })}
+        </tbody></table></div>
+      </section>}
 
       <section className="panel">
         <div className="panel-header">

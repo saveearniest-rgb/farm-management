@@ -26,6 +26,9 @@ let farmBBreedBenchmarkId = "";
 let farmBTraitRecordId = "";
 let farmBBreedingRecordId = "";
 let farmBOffspringId = "";
+let farmBAnimalSaleId = "";
+let farmBAnimalSalePaymentId = "";
+let farmBAnimalSalesForecastId = "";
 
 describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
   beforeAll(async () => {
@@ -184,6 +187,42 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       select: { id: true },
     });
     farmBOffspringId = offspringB.id;
+    const animalSaleB = await tenantDb(farmB.id, userB.id).animalSale.create({
+      data: {
+        farmId: farmB.id,
+        productLine: "MILK",
+        animalId: animalB.id,
+        quantity: 1,
+        unit: "litre",
+        price: 5,
+        totalAmount: 5,
+        amountReceived: 2,
+      },
+      select: { id: true },
+    });
+    farmBAnimalSaleId = animalSaleB.id;
+    const animalSalePaymentB = await tenantDb(farmB.id, userB.id).animalSalePayment.create({
+      data: {
+        farmId: farmB.id,
+        animalSaleId: animalSaleB.id,
+        amount: 2,
+        paymentMethod: "CASH",
+      },
+      select: { id: true },
+    });
+    farmBAnimalSalePaymentId = animalSalePaymentB.id;
+    const salesForecastB = await tenantDb(farmB.id, userB.id).animalSalesForecast.create({
+      data: {
+        farmId: farmB.id,
+        productLine: "MILK",
+        plannedFor: new Date(Date.now() + 30 * 86_400_000),
+        quantity: 10,
+        unit: "litre",
+        unitPrice: 5,
+      },
+      select: { id: true },
+    });
+    farmBAnimalSalesForecastId = salesForecastB.id;
     const medicineStockB = await tenantDb(farmB.id, userB.id).stockItem.create({
       data: {
         farmId: farmB.id,
@@ -324,6 +363,27 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
     const hiddenOffspring = await farmA.animal.findFirst({
       where: { id: farmBOffspringId, farmId: farmBId },
     });
+    const hiddenAnimalSale = await farmA.animalSale.findFirst({
+      where: { id: farmBAnimalSaleId, farmId: farmBId },
+    });
+    const changedAnimalSales = await farmA.animalSale.updateMany({
+      where: { id: farmBAnimalSaleId, farmId: farmBId },
+      data: { amountReceived: 5 },
+    });
+    const hiddenAnimalSalePayment = await farmA.animalSalePayment.findFirst({
+      where: { id: farmBAnimalSalePaymentId, farmId: farmBId },
+    });
+    const changedAnimalSalePayments = await farmA.animalSalePayment.updateMany({
+      where: { id: farmBAnimalSalePaymentId, farmId: farmBId },
+      data: { amount: 5 },
+    });
+    const hiddenAnimalSalesForecast = await farmA.animalSalesForecast.findFirst({
+      where: { id: farmBAnimalSalesForecastId, farmId: farmBId },
+    });
+    const changedAnimalSalesForecasts = await farmA.animalSalesForecast.updateMany({
+      where: { id: farmBAnimalSalesForecastId, farmId: farmBId },
+      data: { quantity: 999 },
+    });
     const stampedHolding = await farmA.landHolding.create({
       data: {
         farmId: farmBId,
@@ -353,6 +413,12 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
     expect(hiddenTraitRecord).toBeNull();
     expect(hiddenBreedingRecord).toBeNull();
     expect(hiddenOffspring).toBeNull();
+    expect(hiddenAnimalSale).toBeNull();
+    expect(changedAnimalSales.count).toBe(0);
+    expect(hiddenAnimalSalePayment).toBeNull();
+    expect(changedAnimalSalePayments.count).toBe(0);
+    expect(hiddenAnimalSalesForecast).toBeNull();
+    expect(changedAnimalSalesForecasts.count).toBe(0);
     expect(stampedHolding.farmId).toBe(farmAId);
 
     const originalPlot = await db.plot.findUnique({
