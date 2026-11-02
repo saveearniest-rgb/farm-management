@@ -83,9 +83,9 @@ The Crop cycles section includes farm-owned disease and pesticide reference entr
 
 ### Animal farming A2 walkthrough
 
-1. Register the farm's own vaccine and medicine batches, including expiry and withdrawal period. No products or veterinary guidance are preloaded.
+1. In **Inputs & stock**, add any veterinary medicine stock item and record an actual priced purchase. Register the farm's own vaccine/medicine batches, optionally linking each product to its stock item. No products or veterinary guidance are preloaded.
 2. Create vaccination schedules using the farm vet's verified dates or age intervals. Age-based reminders require birth dates; group schedules require a first due date.
-3. Record health cases, treatments or vaccinations against an animal or group. Health cases and health records can be queued offline and sync when connected.
+3. Record health cases, treatments or vaccinations against an animal or group. Enter the amount used for a linked product; the health record and stock deduction are saved together, with cost calculated from recorded purchases. Health cases and health records can be queued offline and sync when connected.
 4. Review open cases, active withdrawal periods, and milk/egg records collected inside a withdrawal period. Sales warnings will be connected when livestock sales are implemented.
 5. Record individual or group weights, milk and eggs. The app calculates daily weight gain only when comparable individual weights use one consistent unit. Birth and weaning continue to be recorded as animal events.
 
@@ -117,7 +117,7 @@ Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on loc
 - Weather observations, pest/disease scouting, spray records and pre-harvest interval warnings
 - Worker records, hours, recent pay summary, split expenses, an asset register with usage and maintenance costs, and basic stock and suppliers/lots
 - Animal farming A1: tagged animal and group registers, event timelines with calculated group counts, daily animal records, farm-entered feed rations, feed planning against the shared stock ledger, and expense allocations to animals or groups
-- Animal farming A2: farm-managed vaccine/medicine batches and vaccination schedules, health cases and treatment records, withdrawal-period and collection warnings, and offline-capable weight, milk and egg records
+- Animal farming A2: farm-managed vaccine/medicine batches and vaccination schedules, health cases and treatment records, atomic veterinary stock deductions with cost from recorded purchases, withdrawal-period and collection warnings, and offline-capable weight, milk and egg records
 - Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
 - Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export

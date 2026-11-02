@@ -130,7 +130,7 @@ const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; divis
 const expenseCategories = [
   "SEED", "LAND_PREP", "NURSERY", "TRANSPLANTING", "IRRIGATION",
   "FERTILIZER", "WEEDING", "LABOUR", "MACHINERY", "HARVEST",
-  "PACKAGING", "TRANSPORT", "FEED", "OTHER",
+  "PACKAGING", "TRANSPORT", "FEED", "VETERINARY_MEDICINE", "OTHER",
 ];
 
 function titleCase(value: string) {

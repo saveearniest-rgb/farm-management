@@ -522,7 +522,7 @@ export function AnimalSection({
         <div className="panel-header">
           <div>
             <h3>{sw ? "Afya, chanjo na dawa" : "Health, vaccination and medicine"}</h3>
-            <p>{sw ? "Ratiba hujazwa na shamba au daktari wa mifugo; mfumo hautambui magonjwa wala kutoa ushauri." : "Schedules are entered by the farm or its vet; Shamba does not diagnose or prescribe."}</p>
+            <p>{sw ? "Ratiba hujazwa na shamba au daktari wa mifugo; mfumo hautambui magonjwa wala kutoa ushauri. Akiba ya dawa inaweza kuunganishwa kwenye bidhaa." : "Schedules are entered by the farm or its vet; Shamba does not diagnose or prescribe. Medicine stock can be linked to a product."}</p>
           </div>
         </div>
         {isOwner && (
@@ -533,6 +533,14 @@ export function AnimalSection({
               { value: "MEDICINE", label: sw ? "Dawa" : "Medicine" },
               { value: "OTHER", label: sw ? "Nyingine" : "Other" },
             ]} />
+            <FormSelect
+              label={sw ? "Bidhaa ya akiba ya dawa (si lazima)" : "Veterinary medicine stock item (optional)"}
+              name="stockItemId"
+              required={false}
+              options={data.stockItems
+                .filter((item) => item.category === "VETERINARY_MEDICINE")
+                .map((item) => ({ value: item.id, label: `${item.name} (${item.unit})` }))}
+            />
             <FormField label={sw ? "Ugonjwa unaolengwa (ikiwa umeelezwa)" : "Disease covered (if stated)"} name="diseaseCovered" required={false} />
             <FormField label={sw ? "Dozi" : "Dose"} name="dose" required={false} />
             <FormField label={sw ? "Njia ya matumizi" : "Route"} name="route" required={false} />
@@ -549,6 +557,7 @@ export function AnimalSection({
               <th>{sw ? "Bidhaa" : "Product"}</th><th>{sw ? "Aina" : "Type"}</th>
               <th>{sw ? "Ugonjwa/dozi/njia" : "Disease / dose / route"}</th>
               <th>{sw ? "Kundi/inaisha" : "Batch / expiry"}</th>
+              <th>{sw ? "Bidhaa ya akiba" : "Linked stock"}</th>
               <th>{sw ? "Muda wa kusubiri" : "Withdrawal"}</th>
               {isOwner && <th>{sw ? "Gharama kwa dozi" : "Cost per dose"}</th>}
             </tr></thead><tbody>{data.animalHealthProducts.map((product) => (
@@ -556,6 +565,7 @@ export function AnimalSection({
                 <td>{product.name}</td><td>{healthTypeLabel(product.type)}</td>
                 <td>{[product.diseaseCovered, product.dose, product.route].filter(Boolean).join(" · ") || "—"}</td>
                 <td>{[product.batch, date(product.expiresAt)].filter(Boolean).join(" · ") || "—"}</td>
+                <td>{product.stockItemName ? `${product.stockItemName} (${product.stockItemUnit})` : "—"}</td>
                 <td>{product.withdrawalDays} {sw ? "siku" : "days"}</td>
                 {isOwner && <td>{product.costPerDose === null ? "—" : `${number(product.costPerDose)} ${data.farm.currency}`}</td>}
               </tr>
@@ -652,8 +662,10 @@ export function AnimalSection({
           <FormSelect label={sw ? "Chanjo/dawa (si lazima)" : "Vaccine/medicine (optional)"} name="productId" required={false} options={data.animalHealthProducts.map((product) => ({ value: product.id, label: `${product.name} · ${product.withdrawalDays} ${sw ? "siku kusubiri" : "day withdrawal"}` }))} />
           <FormSelect label={sw ? "Ratiba (si lazima)" : "Schedule (optional)"} name="scheduleId" required={false} options={data.animalVaccinationSchedules.map((schedule) => ({ value: schedule.id, label: schedule.title }))} />
           <FormField label={sw ? "Tarehe ya matumizi" : "Administration date"} name="administeredAt" type="date" />
+          <FormField label={sw ? "Kiasi cha akiba kilichotumika (ikiwa kimeunganishwa)" : "Stock quantity used (if linked)"} name="quantityUsed" type="number" min="0.0001" step="any" required={false} />
           {isOwner && <FormField label={`${sw ? "Gharama" : "Cost"} (${data.farm.currency}, optional)`} name="cost" type="number" min="0" step="any" required={false} />}
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
+          <p className="field-help field-wide">{sw ? "Bidhaa iliyounganishwa na akiba inahitaji kiasi kilichotumika; kiasi hicho hupunguzwa na gharama huhesabiwa kutokana na manunuzi yaliyorekodiwa." : "A product linked to stock requires the amount used; that amount is deducted and cost is calculated from recorded stock purchases."}</p>
         </ActionForm>
         {activeWithdrawalRecords.length > 0 && (
           <div className="alert-card status-warning" role="status">

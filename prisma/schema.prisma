@@ -78,6 +78,7 @@ enum ExpenseCategory {
   PACKAGING
   TRANSPORT
   FEED
+  VETERINARY_MEDICINE
   OTHER
 }
 
@@ -758,10 +759,11 @@ model StockItem {
   lowStockThreshold Decimal?        @db.Decimal(14, 4)
   createdAt         DateTime        @default(now())
 
-  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farm               Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
   movements          StockMovement[]
   feedRations        FeedRation[]
   animalDailyRecords AnimalDailyRecord[]
+  healthProducts     AnimalHealthProduct[]
 
   @@unique([farmId, name])
 }
@@ -780,35 +782,38 @@ model Supplier {
 }
 
 model StockMovement {
-  id            String            @id @default(cuid())
-  farmId        String
-  itemId        String
-  supplierId    String?
-  cycleId       String?
-  animalId      String?
-  animalGroupId String?
-  taskId        String?
-  type          StockMovementType
-  quantity      Decimal           @db.Decimal(14, 4)
-  unit          String
-  unitCost      Decimal?          @db.Decimal(14, 4)
-  currency      String            @default("TZS")
-  lotReference  String?
-  movedAt       DateTime          @default(now())
-  notes         String?
+  id                   String            @id @default(cuid())
+  farmId               String
+  itemId               String
+  supplierId           String?
+  cycleId              String?
+  animalId             String?
+  animalGroupId        String?
+  taskId               String?
+  animalHealthRecordId String?
+  type                 StockMovementType
+  quantity             Decimal           @db.Decimal(14, 4)
+  unit                 String
+  unitCost             Decimal?          @db.Decimal(14, 4)
+  currency             String            @default("TZS")
+  lotReference         String?
+  movedAt              DateTime          @default(now())
+  notes                String?
 
-  farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  item        StockItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  supplier    Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  cycle       CropCycle?   @relation(fields: [cycleId], references: [id], onDelete: SetNull)
-  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: SetNull)
-  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: SetNull)
-  task        Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  item               StockItem           @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  cycle              CropCycle?          @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  animal             Animal?             @relation(fields: [animalId], references: [id], onDelete: SetNull)
+  animalGroup        AnimalGroup?        @relation(fields: [animalGroupId], references: [id], onDelete: SetNull)
+  task               Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  animalHealthRecord AnimalHealthRecord? @relation(fields: [animalHealthRecordId], references: [id], onDelete: SetNull)
 
   @@index([farmId, itemId, movedAt])
   @@index([farmId, cycleId, type])
   @@index([farmId, animalId, movedAt])
   @@index([farmId, animalGroupId, movedAt])
+  @@index([farmId, animalHealthRecordId])
 }
 
 model Animal {
@@ -938,6 +943,7 @@ model AnimalHealthProduct {
   farmId         String
   name           String
   type           AnimalHealthProductType
+  stockItemId    String?
   diseaseCovered String?
   dose           String?
   route          String?
@@ -950,6 +956,7 @@ model AnimalHealthProduct {
   createdAt      DateTime                @default(now())
 
   farm      Farm                        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  stockItem StockItem?                  @relation(fields: [stockItemId], references: [id], onDelete: SetNull)
   schedules AnimalVaccinationSchedule[]
   records   AnimalHealthRecord[]
 
@@ -1024,12 +1031,13 @@ model AnimalHealthRecord {
   offlineId       String?                @unique
   createdAt       DateTime               @default(now())
 
-  farm        Farm                       @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  animal      Animal?                    @relation(fields: [animalId], references: [id], onDelete: Cascade)
-  animalGroup AnimalGroup?               @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
-  healthCase  AnimalHealthCase?          @relation(fields: [healthCaseId], references: [id], onDelete: SetNull)
-  product     AnimalHealthProduct?       @relation(fields: [productId], references: [id], onDelete: SetNull)
-  schedule    AnimalVaccinationSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  farm           Farm                       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal         Animal?                    @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup    AnimalGroup?               @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  healthCase     AnimalHealthCase?          @relation(fields: [healthCaseId], references: [id], onDelete: SetNull)
+  product        AnimalHealthProduct?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+  schedule       AnimalVaccinationSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  stockMovements StockMovement[]
 
   @@index([farmId, animalId, administeredAt])
   @@index([farmId, animalGroupId, administeredAt])

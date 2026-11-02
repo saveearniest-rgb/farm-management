@@ -17,6 +17,8 @@ let farmBPlotId = "";
 let farmBAnimalGroupId = "";
 let farmBAnimalId = "";
 let farmBHealthProductId = "";
+let farmBHealthRecordId = "";
+let farmBHealthStockMovementId = "";
 let farmBPerformanceRecordId = "";
 
 describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
@@ -97,16 +99,50 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       select: { id: true },
     });
     farmBAnimalId = animalB.id;
+    const medicineStockB = await tenantDb(farmB.id, userB.id).stockItem.create({
+      data: {
+        farmId: farmB.id,
+        name: `Farm B medicine ${suffix}`,
+        category: "VETERINARY_MEDICINE",
+        unit: "ml",
+      },
+      select: { id: true },
+    });
     const healthProductB = await tenantDb(farmB.id, userB.id).animalHealthProduct.create({
       data: {
         farmId: farmB.id,
         name: `Farm B vaccine ${suffix}`,
         type: "VACCINE",
+        stockItemId: medicineStockB.id,
         withdrawalDays: 0,
       },
       select: { id: true },
     });
     farmBHealthProductId = healthProductB.id;
+    const healthRecordB = await tenantDb(farmB.id, userB.id).animalHealthRecord.create({
+      data: {
+        farmId: farmB.id,
+        animalId: animalB.id,
+        productId: healthProductB.id,
+        type: "TREATMENT",
+      },
+      select: { id: true },
+    });
+    farmBHealthRecordId = healthRecordB.id;
+    const medicineUsageB = await tenantDb(farmB.id, userB.id).stockMovement.create({
+      data: {
+        farmId: farmB.id,
+        itemId: medicineStockB.id,
+        animalId: animalB.id,
+        animalHealthRecordId: healthRecordB.id,
+        type: "USAGE",
+        quantity: 1,
+        unit: "ml",
+        unitCost: 1,
+      },
+      select: { id: true },
+    });
+    farmBHealthStockMovementId = medicineUsageB.id;
     const performanceRecordB = await tenantDb(farmB.id, userB.id).animalPerformanceRecord.create({
       data: {
         farmId: farmB.id,
@@ -160,6 +196,16 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       where: { id: farmBHealthProductId, farmId: farmBId },
       data: { name: "cross-tenant overwrite" },
     });
+    const hiddenHealthRecord = await farmA.animalHealthRecord.findFirst({
+      where: { id: farmBHealthRecordId, farmId: farmBId },
+    });
+    const hiddenMedicineUsage = await farmA.stockMovement.findFirst({
+      where: { id: farmBHealthStockMovementId, farmId: farmBId },
+    });
+    const changedMedicineUsage = await farmA.stockMovement.updateMany({
+      where: { id: farmBHealthStockMovementId, farmId: farmBId },
+      data: { quantity: 99 },
+    });
     const hiddenPerformanceRecord = await farmA.animalPerformanceRecord.findFirst({
       where: { id: farmBPerformanceRecordId, farmId: farmBId },
     });
@@ -183,6 +229,9 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
     expect(changedAnimals.count).toBe(0);
     expect(hiddenHealthProduct).toBeNull();
     expect(changedHealthProducts.count).toBe(0);
+    expect(hiddenHealthRecord).toBeNull();
+    expect(hiddenMedicineUsage).toBeNull();
+    expect(changedMedicineUsage.count).toBe(0);
     expect(hiddenPerformanceRecord).toBeNull();
     expect(changedPerformanceRecords.count).toBe(0);
     expect(stampedHolding.farmId).toBe(farmAId);

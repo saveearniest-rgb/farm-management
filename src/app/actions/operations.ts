@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { tenantDb } from "@/lib/tenant-db";
 import { parseExpenseAllocations } from "@/lib/expense-allocations";
 import { calculateAnimalGroupCount } from "@/lib/animal-management";
+import { calculateStockBalance } from "@/lib/stock-balance";
 import type { FormState } from "@/lib/form-state";
 
 const optionalNumber = z.preprocess(
@@ -52,6 +53,20 @@ function message(error: unknown) {
 
 function invalid(messageText: string): FormState {
   return { message: messageText };
+}
+
+type StockMovementCostRow = {
+  type: "PURCHASE" | "USAGE" | "ADJUSTMENT";
+  quantity: { toNumber(): number };
+  unitCost: { toNumber(): number } | null;
+};
+
+function getStockBalance(movements: StockMovementCostRow[]) {
+  return calculateStockBalance(movements.map((movement) => ({
+    type: movement.type,
+    quantity: movement.quantity.toNumber(),
+    unitCost: movement.unitCost?.toNumber() ?? null,
+  })));
 }
 
 function parseCsvRows(text: string) {
@@ -1953,7 +1968,7 @@ export async function createStockMovementAction(
   const [item, supplier, cycle, task] = await Promise.all([
     tenantDb(context.farm.id, context.user.id).stockItem.findFirst({
       where: { id: parsed.data.itemId, farmId: context.farm.id },
-      select: { id: true, unit: true },
+      select: { id: true, unit: true, category: true },
     }),
     parsed.data.supplierId
       ? tenantDb(context.farm.id, context.user.id).supplier.findFirst({
@@ -1975,6 +1990,9 @@ export async function createStockMovementAction(
       : Promise.resolve(null),
   ]);
   if (!item) return invalid("Choose a stock item from this farm.");
+  if (item.category === ExpenseCategory.VETERINARY_MEDICINE && parsed.data.type === "USAGE") {
+    return invalid("Record veterinary medicine usage with an animal health record.");
+  }
   if (parsed.data.supplierId && !supplier) return invalid("Choose a supplier from this farm.");
   if (parsed.data.cycleId && !cycle) return invalid("Choose a crop cycle from this farm.");
   if (parsed.data.taskId && !task) return invalid("Choose a task from this farm.");
@@ -2570,31 +2588,14 @@ export async function recordAnimalDailyAction(
       let unitCost: number | null = null;
       if (item && parsed.data.quantity !== undefined) {
         const movements = await tx.stockMovement.findMany({
-          where: { farmId: context.farm.id, itemId: item.id },
+          where: { farmId: context.farm.id, itemId: item.id, movedAt: { lte: occurredAt } },
           orderBy: [{ movedAt: "asc" }, { id: "asc" }],
           select: { type: true, quantity: true, unitCost: true },
         });
-        let currentStock = 0;
-        let inventoryValue = 0;
-        for (const movement of movements) {
-          const movedQuantity = movement.quantity.toNumber();
-          if (movement.type === "PURCHASE") {
-            currentStock += movedQuantity;
-            inventoryValue += movedQuantity * (movement.unitCost?.toNumber() ?? 0);
-          } else if (movement.type === "USAGE") {
-            if (currentStock > 0) {
-              inventoryValue -= (inventoryValue / currentStock) * movedQuantity;
-            }
-            currentStock -= movedQuantity;
-          } else {
-            const averageCost = currentStock > 0 ? inventoryValue / currentStock : 0;
-            currentStock += movedQuantity;
-            inventoryValue += averageCost * movedQuantity;
-          }
-        }
-        if (parsed.data.quantity > currentStock) throw new Error("INSUFFICIENT_FEED_STOCK");
-        if (currentStock <= 0 || inventoryValue <= 0) throw new Error("FEED_COST_UNAVAILABLE");
-        unitCost = inventoryValue / currentStock;
+        const stock = getStockBalance(movements);
+        if (parsed.data.quantity > stock.quantity) throw new Error("INSUFFICIENT_FEED_STOCK");
+        if (stock.quantity <= 0 || stock.inventoryValue <= 0) throw new Error("FEED_COST_UNAVAILABLE");
+        unitCost = stock.averageUnitCost;
       }
 
       await tx.animalDailyRecord.create({
@@ -2667,6 +2668,7 @@ export async function createAnimalHealthProductAction(
   const parsed = z.object({
     name: z.string().trim().min(2).max(120),
     type: z.nativeEnum(AnimalHealthProductType),
+    stockItemId: optionalText,
     diseaseCovered: optionalText,
     dose: optionalText,
     route: optionalText,
@@ -2678,6 +2680,7 @@ export async function createAnimalHealthProductAction(
   }).safeParse({
     name: value(formData, "name"),
     type: value(formData, "type"),
+    stockItemId: value(formData, "stockItemId"),
     diseaseCovered: value(formData, "diseaseCovered"),
     dose: value(formData, "dose"),
     route: value(formData, "route"),
@@ -2694,12 +2697,26 @@ export async function createAnimalHealthProductAction(
   ) {
     return invalid("Enter valid vaccine or medicine details, expiry date, cost, and withdrawal days.");
   }
+  const stockItem = parsed.data.stockItemId
+    ? await tenantDb(context.farm.id, context.user.id).stockItem.findFirst({
+        where: {
+          id: parsed.data.stockItemId,
+          farmId: context.farm.id,
+          category: ExpenseCategory.VETERINARY_MEDICINE,
+        },
+        select: { id: true },
+      })
+    : null;
+  if (parsed.data.stockItemId && !stockItem) {
+    return invalid("Choose a veterinary medicine stock item from this farm.");
+  }
   try {
     await tenantDb(context.farm.id, context.user.id).animalHealthProduct.create({
       data: {
         farmId: context.farm.id,
         name: parsed.data.name,
         type: parsed.data.type,
+        stockItemId: stockItem?.id ?? null,
         diseaseCovered: parsed.data.diseaseCovered,
         dose: parsed.data.dose,
         route: parsed.data.route,
@@ -2821,6 +2838,7 @@ export async function recordAnimalHealthAction(
     route: optionalText,
     batch: optionalText,
     cost: optionalNumber,
+    quantityUsed: optionalNumber,
     notes: optionalText,
     offlineId: optionalText,
   }).safeParse({
@@ -2835,6 +2853,7 @@ export async function recordAnimalHealthAction(
     route: value(formData, "route"),
     batch: value(formData, "batch"),
     cost: value(formData, "cost"),
+    quantityUsed: value(formData, "quantityUsed"),
     notes: value(formData, "notes"),
     offlineId: value(formData, "offlineId"),
   });
@@ -2843,6 +2862,7 @@ export async function recordAnimalHealthAction(
     Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
     dateError(parsed.data.administeredAt ?? "") ||
     (parsed.data.cost !== undefined && parsed.data.cost < 0) ||
+    (parsed.data.quantityUsed !== undefined && parsed.data.quantityUsed <= 0) ||
     (parsed.data.type === AnimalHealthRecordType.VACCINATION && !parsed.data.productId) ||
     (context.role !== FarmRole.OWNER && parsed.data.cost !== undefined)
   ) {
@@ -2892,6 +2912,8 @@ export async function recordAnimalHealthAction(
             expiresAt: true,
             costPerDose: true,
             withdrawalDays: true,
+            stockItemId: true,
+            stockItem: { select: { id: true, unit: true, category: true } },
           },
         })
       : Promise.resolve(null),
@@ -2927,6 +2949,18 @@ export async function recordAnimalHealthAction(
     parsed.data.type === AnimalHealthRecordType.VACCINATION &&
     product?.type !== AnimalHealthProductType.VACCINE
   ) return invalid("Vaccination records require a vaccine product.");
+  if (product?.stockItem && parsed.data.quantityUsed === undefined) {
+    return invalid(`Enter the amount used (${product.stockItem.unit}) so stock can be reduced.`);
+  }
+  if (!product?.stockItem && parsed.data.quantityUsed !== undefined) {
+    return invalid("Choose a product linked to veterinary stock before entering a stock quantity.");
+  }
+  if (product?.stockItem && product.stockItem.category !== ExpenseCategory.VETERINARY_MEDICINE) {
+    return invalid("The linked stock item must be categorized as veterinary medicine.");
+  }
+  if (product?.stockItem && parsed.data.cost !== undefined) {
+    return invalid("The cost of linked medicine stock is calculated from recorded purchases.");
+  }
 
   const withdrawalDays = product?.withdrawalDays ?? 0;
   const withdrawalUntil = withdrawalDays > 0
@@ -2938,7 +2972,25 @@ export async function recordAnimalHealthAction(
         where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
         select: { id: true },
       })) return false;
-      await tx.animalHealthRecord.create({
+      let treatmentCost = parsed.data.cost ?? product?.costPerDose?.toNumber() ?? null;
+      let stockUnitCost: number | null = null;
+      if (product?.stockItem && parsed.data.quantityUsed !== undefined) {
+        const movements = await tx.stockMovement.findMany({
+          where: {
+            farmId: context.farm.id,
+            itemId: product.stockItem.id,
+            movedAt: { lte: administeredAt },
+          },
+          orderBy: [{ movedAt: "asc" }, { id: "asc" }],
+          select: { type: true, quantity: true, unitCost: true },
+        });
+        const stock = getStockBalance(movements);
+        if (parsed.data.quantityUsed > stock.quantity) throw new Error("INSUFFICIENT_MEDICINE_STOCK");
+        if (stock.quantity <= 0 || stock.inventoryValue <= 0) throw new Error("MEDICINE_COST_UNAVAILABLE");
+        stockUnitCost = stock.averageUnitCost;
+        treatmentCost = stockUnitCost * parsed.data.quantityUsed;
+      }
+      const healthRecord = await tx.animalHealthRecord.create({
         data: {
           farmId: context.farm.id,
           animalId: animal?.id ?? null,
@@ -2951,17 +3003,42 @@ export async function recordAnimalHealthAction(
           dose: parsed.data.dose ?? product?.dose,
           route: parsed.data.route ?? product?.route,
           batch: parsed.data.batch ?? product?.batch,
-          cost: parsed.data.cost ?? product?.costPerDose,
+          cost: treatmentCost,
           withdrawalDays,
           withdrawalUntil,
           notes: parsed.data.notes,
           offlineId: parsed.data.offlineId ?? null,
         },
+        select: { id: true },
       });
+      if (product?.stockItem && parsed.data.quantityUsed !== undefined && stockUnitCost !== null) {
+        await tx.stockMovement.create({
+          data: {
+            farmId: context.farm.id,
+            itemId: product.stockItem.id,
+            animalId: animal?.id ?? null,
+            animalGroupId: group?.id ?? null,
+            animalHealthRecordId: healthRecord.id,
+            type: "USAGE",
+            quantity: parsed.data.quantityUsed,
+            unit: product.stockItem.unit,
+            unitCost: stockUnitCost,
+            currency: context.farm.currency,
+            movedAt: administeredAt,
+            notes: parsed.data.notes,
+          },
+        });
+      }
       return true;
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     if (!created) return { message: "Animal health record already synced.", success: true };
   } catch (error) {
+    if (error instanceof Error && error.message === "INSUFFICIENT_MEDICINE_STOCK") {
+      return invalid("There is not enough veterinary medicine stock for this entry.");
+    }
+    if (error instanceof Error && error.message === "MEDICINE_COST_UNAVAILABLE") {
+      return invalid("Record a priced medicine purchase before using stock in a health record.");
+    }
     if (
       parsed.data.offlineId &&
       error instanceof Prisma.PrismaClientKnownRequestError &&

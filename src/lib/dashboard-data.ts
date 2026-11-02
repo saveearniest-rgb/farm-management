@@ -363,6 +363,7 @@ export async function getDashboardData(context: Context) {
         expiresAt: true,
         costPerDose: isOwner,
         withdrawalDays: true,
+        stockItem: { select: { name: true, unit: true } },
       },
     }),
     db.animalVaccinationSchedule.findMany({
@@ -934,6 +935,8 @@ export async function getDashboardData(context: Context) {
       expiresAt: iso(product.expiresAt),
       costPerDose: isOwner ? numeric(product.costPerDose) : null,
       withdrawalDays: product.withdrawalDays,
+      stockItemName: product.stockItem?.name ?? null,
+      stockItemUnit: product.stockItem?.unit ?? null,
     })),
     animalVaccinationSchedules: rawAnimalVaccinationSchedules.map((schedule) => ({
       id: schedule.id,
