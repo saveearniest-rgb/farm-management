@@ -14,6 +14,8 @@ let farmBId = "";
 let userAId = "";
 let userBId = "";
 let farmBPlotId = "";
+let farmBAnimalGroupId = "";
+let farmBAnimalId = "";
 
 describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
   beforeAll(async () => {
@@ -73,6 +75,26 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       select: { id: true },
     });
     farmBPlotId = plotB.id;
+    const groupB = await tenantDb(farmB.id, userB.id).animalGroup.create({
+      data: {
+        farmId: farmB.id,
+        name: `Farm B animals ${suffix}`,
+        species: "test species",
+        startingCount: 2,
+      },
+      select: { id: true },
+    });
+    farmBAnimalGroupId = groupB.id;
+    const animalB = await tenantDb(farmB.id, userB.id).animal.create({
+      data: {
+        farmId: farmB.id,
+        tagNumber: `tag-${suffix}`,
+        species: "test species",
+        groupId: groupB.id,
+      },
+      select: { id: true },
+    });
+    farmBAnimalId = animalB.id;
   }, 60_000);
 
   afterAll(async () => {
@@ -94,6 +116,20 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       where: { id: farmBPlotId, farmId: farmBId },
       data: { name: "cross-tenant overwrite" },
     });
+    const hiddenAnimalGroup = await farmA.animalGroup.findFirst({
+      where: { id: farmBAnimalGroupId, farmId: farmBId },
+    });
+    const changedAnimalGroups = await farmA.animalGroup.updateMany({
+      where: { id: farmBAnimalGroupId, farmId: farmBId },
+      data: { name: "cross-tenant overwrite" },
+    });
+    const hiddenAnimal = await farmA.animal.findFirst({
+      where: { id: farmBAnimalId, farmId: farmBId },
+    });
+    const changedAnimals = await farmA.animal.updateMany({
+      where: { id: farmBAnimalId, farmId: farmBId },
+      data: { status: "DEAD" },
+    });
     const stampedHolding = await farmA.landHolding.create({
       data: {
         farmId: farmBId,
@@ -104,6 +140,10 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
 
     expect(hiddenPlot).toBeNull();
     expect(changedPlots.count).toBe(0);
+    expect(hiddenAnimalGroup).toBeNull();
+    expect(changedAnimalGroups.count).toBe(0);
+    expect(hiddenAnimal).toBeNull();
+    expect(changedAnimals.count).toBe(0);
     expect(stampedHolding.farmId).toBe(farmAId);
 
     const originalPlot = await db.plot.findUnique({

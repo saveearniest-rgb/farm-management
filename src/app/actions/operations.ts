@@ -1,12 +1,13 @@
 "use server";
 
-import { AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { AnimalDailyRecordType, AnimalEventType, AnimalTrackingMode, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { tenantDb } from "@/lib/tenant-db";
 import { parseExpenseAllocations } from "@/lib/expense-allocations";
+import { calculateAnimalGroupCount } from "@/lib/animal-management";
 import type { FormState } from "@/lib/form-state";
 
 const optionalNumber = z.preprocess(
@@ -1400,6 +1401,7 @@ export async function createExpenseAction(
     amount: positiveNumber,
     offlineId: optionalText,
     allocations: z.string().max(5000).optional(),
+    animalTarget: optionalText,
     spentAt: z.string().optional(),
     notes: optionalText,
   }).safeParse({
@@ -1408,6 +1410,7 @@ export async function createExpenseAction(
     amount: value(formData, "amount"),
     offlineId: value(formData, "offlineId"),
     allocations: value(formData, "allocations"),
+    animalTarget: value(formData, "animalTarget"),
     spentAt,
     notes: value(formData, "notes"),
   });
@@ -1415,23 +1418,51 @@ export async function createExpenseAction(
   if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).expense.findFirst({
     where: { farmId: context.farm.id, offlineId: parsed.data.offlineId }, select: { id: true },
   })) return { message: "Expense already synced.", success: true };
-  const allocationText = parsed.data.allocations?.trim() ?? "";
-  let allocations: Array<{ cycleId?: string; plotId?: string; amount: number }> = [];
+  let allocationText = parsed.data.allocations?.trim() ?? "";
+  if (parsed.data.animalTarget) {
+    if (allocationText || parsed.data.cycleId) {
+      return invalid("Choose either one direct target or a split allocation, not both.");
+    }
+    if (!/^(animal|group):[^|]+$/.test(parsed.data.animalTarget)) {
+      return invalid("Choose an animal or group allocation target.");
+    }
+    allocationText = `${parsed.data.animalTarget} | ${parsed.data.amount}`;
+  }
+  let allocations: Array<{
+    cycleId?: string;
+    plotId?: string;
+    animalId?: string;
+    animalGroupId?: string;
+    amount: number;
+  }> = [];
   if (allocationText) {
     const allocationResult = parseExpenseAllocations(allocationText, parsed.data.amount);
     if (!allocationResult.allocations) return invalid(allocationResult.error);
     allocations = allocationResult.allocations;
     const cycleIds = allocations.flatMap((allocation) => allocation.cycleId ? [allocation.cycleId] : []);
     const plotIds = allocations.flatMap((allocation) => allocation.plotId ? [allocation.plotId] : []);
-    const [validCycles, validPlots] = await Promise.all([
+    const animalIds = allocations.flatMap((allocation) => allocation.animalId ? [allocation.animalId] : []);
+    const animalGroupIds = allocations.flatMap((allocation) => allocation.animalGroupId ? [allocation.animalGroupId] : []);
+    const [validCycles, validPlots, validAnimals, validAnimalGroups] = await Promise.all([
       cycleIds.length ? tenantDb(context.farm.id, context.user.id).cropCycle.count({
         where: { farmId: context.farm.id, id: { in: cycleIds } },
       }) : 0,
       plotIds.length ? tenantDb(context.farm.id, context.user.id).plot.count({
         where: { farmId: context.farm.id, id: { in: plotIds } },
       }) : 0,
+      animalIds.length ? tenantDb(context.farm.id, context.user.id).animal.count({
+        where: { farmId: context.farm.id, id: { in: animalIds }, archivedAt: null },
+      }) : 0,
+      animalGroupIds.length ? tenantDb(context.farm.id, context.user.id).animalGroup.count({
+        where: { farmId: context.farm.id, id: { in: animalGroupIds }, archivedAt: null },
+      }) : 0,
     ]);
-    if (validCycles !== new Set(cycleIds).size || validPlots !== new Set(plotIds).size) {
+    if (
+      validCycles !== new Set(cycleIds).size ||
+      validPlots !== new Set(plotIds).size ||
+      validAnimals !== new Set(animalIds).size ||
+      validAnimalGroups !== new Set(animalGroupIds).size
+    ) {
       return invalid("Every allocation target must belong to this farm.");
     }
   } else if (parsed.data.cycleId) {
@@ -1459,6 +1490,8 @@ export async function createExpenseAction(
               farmId: context.farm.id,
               cycleId: allocation.cycleId ?? null,
               plotId: allocation.plotId ?? null,
+              animalId: allocation.animalId ?? null,
+              animalGroupId: allocation.animalGroupId ?? null,
               amount: allocation.amount,
               currency: context.farm.currency,
             })),
@@ -2068,4 +2101,558 @@ export async function addFarmMemberAction(
   }
   revalidatePath("/");
   return { message: "Farm manager added.", success: true };
+}
+
+export async function createAnimalGroupAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can register animal groups.");
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(100),
+    species: z.string().trim().min(2).max(80),
+    trackingMode: z.nativeEnum(AnimalTrackingMode),
+    startDate: z.string().optional(),
+    startingCount: z.coerce.number().int().min(0).max(1_000_000),
+    notes: optionalText,
+  }).safeParse({
+    name: value(formData, "name"),
+    species: value(formData, "species"),
+    trackingMode: value(formData, "trackingMode"),
+    startDate: value(formData, "startDate"),
+    startingCount: value(formData, "startingCount"),
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.startDate ?? "") ||
+    (parsed.data.trackingMode === AnimalTrackingMode.INDIVIDUAL && parsed.data.startingCount !== 0)
+  ) {
+    return invalid("Enter a group name, species, start date and a whole starting count.");
+  }
+  const startDate = optionalDate(parsed.data.startDate ?? "") ?? new Date();
+  if (startDate.getTime() > Date.now()) return invalid("Group start date must not be in the future.");
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalGroup.create({
+      data: {
+        farmId: context.farm.id,
+        name: parsed.data.name,
+        species: parsed.data.species,
+        trackingMode: parsed.data.trackingMode,
+        startDate,
+        startingCount: parsed.data.startingCount,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return invalid("A group with that name already exists in this farm.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal group created.", success: true };
+}
+
+export async function createAnimalAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can register individual animals.");
+  const parsed = z.object({
+    tagNumber: z.string().trim().min(1).max(80),
+    species: z.string().trim().min(2).max(80),
+    breed: optionalText,
+    sex: optionalText,
+    birthDate: z.string().optional(),
+    source: optionalText,
+    purchasePrice: optionalNumber,
+    seller: optionalText,
+    groupId: z.string().min(1),
+  }).safeParse({
+    tagNumber: value(formData, "tagNumber"),
+    species: value(formData, "species"),
+    breed: value(formData, "breed"),
+    sex: value(formData, "sex"),
+    birthDate: value(formData, "birthDate"),
+    source: value(formData, "source"),
+    purchasePrice: value(formData, "purchasePrice"),
+    seller: value(formData, "seller"),
+    groupId: value(formData, "groupId"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.birthDate ?? "") ||
+    (parsed.data.purchasePrice !== undefined && parsed.data.purchasePrice < 0) ||
+    (context.role !== FarmRole.OWNER && parsed.data.purchasePrice !== undefined)
+  ) {
+    return invalid("Enter a tag number and species, and check the birth date.");
+  }
+  const birthDate = optionalDate(parsed.data.birthDate ?? "");
+  if (birthDate && birthDate.getTime() > Date.now()) {
+    return invalid("Birth date must not be in the future.");
+  }
+  const group = await tenantDb(context.farm.id, context.user.id).animalGroup.findFirst({
+        where: { id: parsed.data.groupId, farmId: context.farm.id, archivedAt: null },
+        select: { id: true, species: true, trackingMode: true },
+      });
+  if (!group || group.trackingMode !== AnimalTrackingMode.INDIVIDUAL) {
+    return invalid("Choose an active individual-tracking group from this farm.");
+  }
+  if (group.species.toLocaleLowerCase() !== parsed.data.species.toLocaleLowerCase()) {
+    return invalid("The animal species must match its group.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).animal.create({
+      data: {
+        farmId: context.farm.id,
+        tagNumber: parsed.data.tagNumber,
+        species: parsed.data.species,
+        breed: parsed.data.breed,
+        sex: parsed.data.sex,
+        birthDate,
+        source: parsed.data.source,
+        purchasePrice: parsed.data.purchasePrice,
+        seller: parsed.data.seller,
+        groupId: group.id,
+      },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return invalid("That tag number is already registered in this farm.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal registered.", success: true };
+}
+
+export async function archiveAnimalGroupAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can archive animal groups.");
+  const id = value(formData, "id");
+  if (!id) return invalid("Choose an animal group to archive.");
+  const group = await tenantDb(context.farm.id, context.user.id).animalGroup.findFirst({
+    where: { id, farmId: context.farm.id, archivedAt: null },
+    select: { id: true },
+  });
+  if (!group) return invalid("That active animal group was not found in this farm.");
+  const activeTaggedAnimals = await tenantDb(context.farm.id, context.user.id).animal.count({
+    where: { farmId: context.farm.id, groupId: group.id, archivedAt: null, status: "ACTIVE" },
+  });
+  if (activeTaggedAnimals > 0) {
+    return invalid("Archive or move the group's active tagged animals before archiving the group.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalGroup.update({
+      where: { id: group.id },
+      data: { archivedAt: new Date() },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal group archived.", success: true };
+}
+
+export async function archiveAnimalAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can archive animals.");
+  const id = value(formData, "id");
+  if (!id) return invalid("Choose an animal to archive.");
+  const animal = await tenantDb(context.farm.id, context.user.id).animal.findFirst({
+    where: { id, farmId: context.farm.id, archivedAt: null },
+    select: { id: true },
+  });
+  if (!animal) return invalid("That active animal was not found in this farm.");
+  try {
+    await tenantDb(context.farm.id, context.user.id).animal.update({
+      where: { id: animal.id },
+      data: { archivedAt: new Date() },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal archived.", success: true };
+}
+
+export async function recordAnimalEventAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    type: z.nativeEnum(AnimalEventType),
+    occurredAt: z.string().optional(),
+    quantity: optionalNumber,
+    purchaseCost: optionalNumber,
+    seller: optionalText,
+    notes: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    type: value(formData, "type"),
+    occurredAt: value(formData, "occurredAt"),
+    quantity: value(formData, "quantity"),
+    purchaseCost: value(formData, "purchaseCost"),
+    seller: value(formData, "seller"),
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
+    dateError(parsed.data.occurredAt ?? "") ||
+    (Boolean(parsed.data.animalId) && parsed.data.quantity !== undefined) ||
+    (parsed.data.quantity !== undefined &&
+      (!Number.isInteger(parsed.data.quantity) || parsed.data.quantity <= 0)) ||
+    (parsed.data.purchaseCost !== undefined &&
+      (parsed.data.purchaseCost < 0 ||
+        parsed.data.type !== AnimalEventType.PURCHASE ||
+        context.role !== FarmRole.OWNER)) ||
+    (parsed.data.seller && parsed.data.type !== AnimalEventType.PURCHASE)
+  ) {
+    return invalid("Choose one animal or group, event type, date and a positive whole quantity where needed.");
+  }
+  const occurredAt = optionalDate(parsed.data.occurredAt ?? "") ?? new Date();
+  if (occurredAt.getTime() > Date.now()) return invalid("Animal events must not be dated in the future.");
+  const isCountEvent = ["BIRTH", "PURCHASE", "SALE", "DEATH", "CULLED"].includes(parsed.data.type);
+  if (parsed.data.animalGroupId && isCountEvent && parsed.data.quantity === undefined) {
+    return invalid("Enter how many animals were affected.");
+  }
+
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const group = parsed.data.animalGroupId
+    ? await farmDb.animalGroup.findFirst({
+        where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+        include: { events: { select: { type: true, quantity: true } } },
+      })
+    : null;
+  const animal = parsed.data.animalId
+    ? await farmDb.animal.findFirst({
+        where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null },
+        select: { id: true, status: true },
+      })
+    : null;
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  if (parsed.data.animalId && !animal) return invalid("Choose an active animal from this farm.");
+  if (group && group.trackingMode !== AnimalTrackingMode.HEAD_COUNT) {
+    return invalid("Record count events through tagged animals in an individual-tracking group.");
+  }
+  if (group && occurredAt < group.startDate) {
+    return invalid("A group event cannot be earlier than the group's start date.");
+  }
+  if (animal && animal.status !== "ACTIVE") return invalid("Only active animals can receive new events.");
+  const quantity = parsed.data.quantity ?? (parsed.data.animalId && isCountEvent ? 1 : null);
+
+  try {
+    await farmDb.$transaction(async (tx) => {
+      if (group && quantity !== null && ["SALE", "DEATH", "CULLED"].includes(parsed.data.type)) {
+        const latestGroup = await tx.animalGroup.findFirst({
+          where: { id: group.id, farmId: context.farm.id, archivedAt: null },
+          include: { events: { select: { type: true, quantity: true } } },
+        });
+        if (!latestGroup) throw new Error("ANIMAL_GROUP_NOT_FOUND");
+        if (quantity > calculateAnimalGroupCount(latestGroup.startingCount, latestGroup.events)) {
+          throw new Error("GROUP_COUNT_EXCEEDED");
+        }
+      }
+      await tx.animalEvent.create({
+        data: {
+          farmId: context.farm.id,
+          animalId: animal?.id ?? null,
+          animalGroupId: group?.id ?? null,
+          type: parsed.data.type,
+          occurredAt,
+          quantity,
+          purchaseCost: parsed.data.purchaseCost,
+          seller: parsed.data.seller,
+          notes: parsed.data.notes,
+        },
+      });
+      if (animal && ["SALE", "DEATH", "CULLED"].includes(parsed.data.type)) {
+        await tx.animal.update({
+          where: { id: animal.id, farmId: context.farm.id },
+          data: { status: parsed.data.type === "SALE" ? "SOLD" : parsed.data.type === "DEATH" ? "DEAD" : "CULLED" },
+        });
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "GROUP_COUNT_EXCEEDED") {
+      return invalid("The event quantity cannot exceed the group's current count.");
+    }
+    if (error instanceof Error && error.message === "ANIMAL_GROUP_NOT_FOUND") {
+      return invalid("Choose an active animal group from this farm.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal event recorded.", success: true };
+}
+
+export async function saveFeedRationAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can change feed rations.");
+  const parsed = z.object({
+    animalGroupId: z.string().min(1),
+    itemId: z.string().min(1),
+    quantityPerHead: positiveNumber,
+  }).safeParse({
+    animalGroupId: value(formData, "animalGroupId"),
+    itemId: value(formData, "itemId"),
+    quantityPerHead: value(formData, "quantityPerHead"),
+  });
+  if (!parsed.success) return invalid("Choose a group and feed item, then enter a positive daily amount per head.");
+
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const [group, item] = await Promise.all([
+    farmDb.animalGroup.findFirst({
+      where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+      select: { id: true },
+    }),
+    farmDb.stockItem.findFirst({
+      where: { id: parsed.data.itemId, farmId: context.farm.id },
+      select: { id: true, category: true, unit: true },
+    }),
+  ]);
+  if (!group || !item) return invalid("Choose a group and feed item from this farm.");
+  if (item.category !== ExpenseCategory.FEED) return invalid("The selected stock item is not categorized as feed.");
+
+  try {
+    await farmDb.feedRation.upsert({
+      where: {
+        farmId_animalGroupId_itemId: {
+          farmId: context.farm.id,
+          animalGroupId: group.id,
+          itemId: item.id,
+        },
+      },
+      create: {
+        farmId: context.farm.id,
+        animalGroupId: group.id,
+        itemId: item.id,
+        quantityPerHead: parsed.data.quantityPerHead,
+        unit: item.unit,
+      },
+      update: {
+        quantityPerHead: parsed.data.quantityPerHead,
+        unit: item.unit,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Daily feed ration saved.", success: true };
+}
+
+export async function recordAnimalDailyAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    type: z.nativeEnum(AnimalDailyRecordType),
+    quantity: optionalNumber,
+    feedItemId: optionalText,
+    unit: optionalText,
+    recordedAt: z.string().optional(),
+    notes: optionalText,
+    offlineId: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    type: value(formData, "type"),
+    quantity: value(formData, "quantity"),
+    feedItemId: value(formData, "feedItemId"),
+    unit: value(formData, "unit"),
+    recordedAt: value(formData, "recordedAt"),
+    notes: value(formData, "notes"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (
+    !parsed.success ||
+    Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
+    dateError(parsed.data.recordedAt ?? "") ||
+    (parsed.data.quantity !== undefined && parsed.data.quantity <= 0)
+  ) {
+    return invalid("Choose one animal or group, an activity, date and a positive quantity when applicable.");
+  }
+  const isMeasured = ["FEEDING", "WATER", "MILK", "EGGS"].includes(parsed.data.type);
+  if (isMeasured && parsed.data.quantity === undefined) {
+    return invalid("Enter the recorded quantity for this activity.");
+  }
+  if (isMeasured && parsed.data.type !== AnimalDailyRecordType.FEEDING && !parsed.data.unit) {
+    return invalid("Choose the unit for the recorded quantity.");
+  }
+  if (parsed.data.type === AnimalDailyRecordType.FEEDING &&
+      (!parsed.data.feedItemId || parsed.data.quantity === undefined)) {
+    return invalid("Choose a feed item and enter the amount actually given.");
+  }
+  if (parsed.data.feedItemId && parsed.data.type !== AnimalDailyRecordType.FEEDING) {
+    return invalid("Feed stock can only be selected for a feeding entry.");
+  }
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  if (parsed.data.offlineId && await farmDb.animalDailyRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Animal daily record already synced.", success: true };
+
+  const occurredAt = optionalDate(parsed.data.recordedAt ?? "") ?? new Date();
+  const item = parsed.data.feedItemId
+    ? await farmDb.stockItem.findFirst({
+        where: { id: parsed.data.feedItemId, farmId: context.farm.id },
+        select: { id: true, category: true, unit: true },
+      })
+    : null;
+  if (parsed.data.feedItemId && !item) return invalid("Choose a feed item from this farm.");
+  if (item && item.category !== ExpenseCategory.FEED) return invalid("The selected stock item is not categorized as feed.");
+
+  const [animal, group] = await Promise.all([
+    parsed.data.animalId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (parsed.data.animalId && !animal) return invalid("Choose an active animal from this farm.");
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  if (parsed.data.type === AnimalDailyRecordType.FEEDING && !item) return invalid("Choose a feed item.");
+
+  try {
+    const created = await farmDb.$transaction(async (tx) => {
+      if (parsed.data.offlineId && await tx.animalDailyRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })) return false;
+
+      let unitCost: number | null = null;
+      if (item && parsed.data.quantity !== undefined) {
+        const movements = await tx.stockMovement.findMany({
+          where: { farmId: context.farm.id, itemId: item.id },
+          orderBy: [{ movedAt: "asc" }, { id: "asc" }],
+          select: { type: true, quantity: true, unitCost: true },
+        });
+        let currentStock = 0;
+        let inventoryValue = 0;
+        for (const movement of movements) {
+          const movedQuantity = movement.quantity.toNumber();
+          if (movement.type === "PURCHASE") {
+            currentStock += movedQuantity;
+            inventoryValue += movedQuantity * (movement.unitCost?.toNumber() ?? 0);
+          } else if (movement.type === "USAGE") {
+            if (currentStock > 0) {
+              inventoryValue -= (inventoryValue / currentStock) * movedQuantity;
+            }
+            currentStock -= movedQuantity;
+          } else {
+            const averageCost = currentStock > 0 ? inventoryValue / currentStock : 0;
+            currentStock += movedQuantity;
+            inventoryValue += averageCost * movedQuantity;
+          }
+        }
+        if (parsed.data.quantity > currentStock) throw new Error("INSUFFICIENT_FEED_STOCK");
+        if (currentStock <= 0 || inventoryValue <= 0) throw new Error("FEED_COST_UNAVAILABLE");
+        unitCost = inventoryValue / currentStock;
+      }
+
+      await tx.animalDailyRecord.create({
+        data: {
+          farmId: context.farm.id,
+          animalId: animal?.id ?? null,
+          animalGroupId: group?.id ?? null,
+          feedItemId: item?.id ?? null,
+          type: parsed.data.type,
+          recordedAt: occurredAt,
+          quantity: parsed.data.quantity,
+          unit: item?.unit ?? parsed.data.unit ?? null,
+          notes: parsed.data.notes,
+          offlineId: parsed.data.offlineId ?? null,
+        },
+      });
+      if (item && parsed.data.quantity !== undefined) {
+        await tx.stockMovement.create({
+          data: {
+            farmId: context.farm.id,
+            itemId: item.id,
+            animalId: animal?.id ?? null,
+            animalGroupId: group?.id ?? null,
+            type: "USAGE",
+            quantity: parsed.data.quantity,
+            unit: item.unit,
+            unitCost,
+            currency: context.farm.currency,
+            movedAt: occurredAt,
+            notes: parsed.data.notes,
+          },
+        });
+      }
+      return true;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    if (!created) return { message: "Animal daily record already synced.", success: true };
+  } catch (error) {
+    if (error instanceof Error && error.message === "INSUFFICIENT_FEED_STOCK") {
+      return invalid("There is not enough feed stock for this entry.");
+    }
+    if (error instanceof Error && error.message === "FEED_COST_UNAVAILABLE") {
+      return invalid("Record a priced feed purchase before using stock in the daily tracker.");
+    }
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalDailyRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) {
+      return { message: "Animal daily record already synced.", success: true };
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal daily record saved.", success: true };
 }

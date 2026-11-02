@@ -10,6 +10,17 @@ describe("parseExpenseAllocations", () => {
       ],
       error: null,
     });
+
+  });
+
+  it("accepts animal and group allocations", () => {
+    expect(parseExpenseAllocations("animal:animal-a | 8\ngroup:group-b | 12", 20)).toEqual({
+      allocations: [
+        { animalId: "animal-a", amount: 8 },
+        { animalGroupId: "group-b", amount: 12 },
+      ],
+      error: null,
+    });
   });
 
   it("rejects malformed, non-positive and unequal allocations", () => {

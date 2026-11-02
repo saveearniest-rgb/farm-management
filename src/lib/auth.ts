@@ -35,6 +35,7 @@ export async function getAppContext() {
               totalAreaUnit: true,
               timezone: true,
               nationalFarmerId: true,
+              animalDivisionEnabled: true,
             },
           },
         },

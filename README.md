@@ -71,6 +71,18 @@ The first account registered for a farm becomes its owner. A farm owner can crea
 
 The Crop cycles section includes farm-owned disease and pesticide reference entries. Add them manually or download the CSV template, edit it in Excel, save it as UTF-8 CSV, then import it for a selected crop. The template contains no prefilled agricultural guidance; only add information verified for your farm.
 
+### Animal farming A1 walkthrough
+
+1. As the farm owner, open **Farm settings**, enable **Animal farming**, and save. Use the **Crop farming / Animal farming** switch in the left navigation to open the animal workspace.
+2. Register a group with its starting head count, and register individually tagged animals where the farm uses tags.
+3. Record group births, purchases, deaths, sales or culls; the current group count is calculated from the starting count and event history.
+4. In **Inputs & stock**, create a stock item with category **FEED**, then record an actual priced purchase. No feed items or nutrient assumptions are seeded.
+5. In **Animal farming**, set a feed ration per head per day for a group. The feed planner compares that farm-entered ration with current FEED stock; it is not a nutrition recommendation.
+6. Record a daily feeding entry against an animal or group. It saves offline when disconnected and, on sync, reduces the shared feed stock. Water, milk, egg and health-check notes can also be recorded; health checks are records only and are not diagnoses.
+7. In **Labour & costs**, select a group or tagged animal to allocate an expense directly. Purchase prices and seller details are retained on the animal/event record; enter expenses separately when they should be included in the cost ledger.
+
+Animal reference assumptions and veterinary schedules are not preloaded. Confirm health, vaccination, feed and legal guidance with the farm's livestock professional or relevant local authority. Animal A2 (health, vaccination and performance) and A3 (breeding, income, capital investment and planning) are not included yet.
+
 Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on local disk. The encryption key is derived from `AUTH_SECRET`, so keep that secret stable and configure persistent storage; see [docs/operations.md](./docs/operations.md).
 
 ## Available scripts
@@ -96,6 +108,7 @@ Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on loc
 - Nursery batches, checks, transplants, tasks, reminders and activity notes
 - Weather observations, pest/disease scouting, spray records and pre-harvest interval warnings
 - Worker records, hours, recent pay summary, split expenses, an asset register with usage and maintenance costs, and basic stock and suppliers/lots
+- Animal farming A1: tagged animal and group registers, event timelines with calculated group counts, daily animal records, farm-entered feed rations, feed planning against the shared stock ledger, and expense allocations to animals or groups
 - Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
 - Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export

@@ -34,6 +34,7 @@ import {
   MapPinned,
   Package,
   Plus,
+  PawPrint,
   Printer,
   Search,
   Settings2,
@@ -107,26 +108,29 @@ import { ManagerInviteForm } from "./manager-invite-form";
 import { ThemeToggle } from "./theme-toggle";
 import { FileAttachments } from "./file-attachments";
 import { OfflineSyncStatus } from "./offline-sync-status";
+import { AnimalSection } from "./animal-section";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number; strokeWidth?: number }>;
-type SectionId = "overview" | "land" | "crops" | "nursery" | "tasks" | "inputs" | "labour" | "reports" | "settings";
+type DivisionId = "crops" | "animals";
+type SectionId = "overview" | "land" | "crops" | "nursery" | "tasks" | "inputs" | "labour" | "reports" | "settings" | "animals";
 
-const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; ownerOnly?: boolean }> = [
-  { id: "overview", key: "dashboard", icon: LayoutDashboard },
-  { id: "land", key: "land", icon: MapPinned },
-  { id: "crops", key: "crops", icon: Leaf },
-  { id: "nursery", key: "nursery", icon: Flower2 },
-  { id: "tasks", key: "tasks", icon: ClipboardCheck },
-  { id: "inputs", key: "inputs", icon: Package },
-  { id: "labour", key: "labour", icon: Users },
-  { id: "reports", key: "reports", icon: BarChart3, ownerOnly: true },
-  { id: "settings", key: "settings", icon: Settings2 },
+const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; division: DivisionId; ownerOnly?: boolean }> = [
+  { id: "overview", key: "dashboard", icon: LayoutDashboard, division: "crops" },
+  { id: "land", key: "land", icon: MapPinned, division: "crops" },
+  { id: "crops", key: "crops", icon: Leaf, division: "crops" },
+  { id: "nursery", key: "nursery", icon: Flower2, division: "crops" },
+  { id: "tasks", key: "tasks", icon: ClipboardCheck, division: "crops" },
+  { id: "inputs", key: "inputs", icon: Package, division: "crops" },
+  { id: "labour", key: "labour", icon: Users, division: "crops" },
+  { id: "reports", key: "reports", icon: BarChart3, division: "crops", ownerOnly: true },
+  { id: "settings", key: "settings", icon: Settings2, division: "crops" },
+  { id: "animals", key: "animalFarming", icon: PawPrint, division: "animals" },
 ];
 
 const expenseCategories = [
   "SEED", "LAND_PREP", "NURSERY", "TRANSPLANTING", "IRRIGATION",
   "FERTILIZER", "WEEDING", "LABOUR", "MACHINERY", "HARVEST",
-  "PACKAGING", "TRANSPORT", "OTHER",
+  "PACKAGING", "TRANSPORT", "FEED", "OTHER",
 ];
 
 function titleCase(value: string) {
@@ -195,11 +199,21 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 export function FarmDashboard({ data }: { data: DashboardData }) {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const activeDivision: DivisionId =
+    data.farm.animalDivisionEnabled && activeSection === "animals" ? "animals" : "crops";
+  const currentSection: SectionId =
+    activeSection === "animals" && activeDivision === "crops" ? "overview" : activeSection;
   const locale: Locale = data.user.locale === "sw" ? "sw" : "en";
   const t = (key: string) => translate(locale, key);
   const isOwner = data.role === "OWNER";
-  const section = navigation.find((item) => item.id === activeSection) ?? navigation[0]!;
-  const visibleNavigation = navigation.filter((item) => !item.ownerOnly || isOwner);
+  const section = navigation.find((item) => item.id === currentSection) ??
+    navigation.find((item) => item.division === activeDivision)!;
+  const visibleNavigation = navigation.filter(
+    (item) =>
+      item.division === activeDivision &&
+      (item.division !== "animals" || data.farm.animalDivisionEnabled) &&
+      (!item.ownerOnly || isOwner),
+  );
   const now = new Date(data.generatedAt);
   const nowMs = data.generatedAt;
   const today = now.toDateString();
@@ -263,7 +277,7 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
 
   const selectedSectionTitle = t(section.key);
   const content = (() => {
-    switch (activeSection) {
+    switch (currentSection) {
       case "land":
         return <LandSection data={data} locale={locale} isOwner={isOwner} />;
       case "crops":
@@ -286,6 +300,10 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
         ) : null;
       case "settings":
         return <SettingsSection data={data} locale={locale} isOwner={isOwner} />;
+      case "animals":
+        return data.farm.animalDivisionEnabled
+          ? <AnimalSection data={data} locale={locale} isOwner={isOwner} />
+          : null;
       default:
         return (
           <OverviewSection
@@ -338,16 +356,46 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
             </ActionForm>
           </div>
         )}
+        <div className={`division-switch ${data.farm.animalDivisionEnabled ? "" : "single-division"}`} role="group" aria-label={locale === "sw" ? "Chagua sehemu ya shamba" : "Choose farm division"}>
+          <button
+            aria-label={t("cropFarming")}
+            aria-pressed={activeDivision === "crops"}
+            className={activeDivision === "crops" ? "active" : ""}
+            onClick={() => {
+              setActiveSection("overview");
+            }}
+            title={t("cropFarming")}
+            type="button"
+          >
+            <Leaf size={17} />
+            <span>{t("cropFarming")}</span>
+          </button>
+          {data.farm.animalDivisionEnabled && <button
+            aria-label={t("animalFarming")}
+            aria-pressed={activeDivision === "animals"}
+            className={activeDivision === "animals" ? "active" : ""}
+            onClick={() => {
+              setActiveSection("animals");
+            }}
+            title={t("animalFarming")}
+            type="button"
+          >
+            <PawPrint size={17} />
+            <span>{t("animalFarming")}</span>
+          </button>}
+        </div>
         <nav aria-label={locale === "sw" ? "Urambazaji mkuu" : "Main navigation"} className="side-nav">
-          <span className="nav-group-label">{locale === "sw" ? "SHAMBA" : "FARM"}</span>
+          <span className="nav-group-label">{activeDivision === "animals" ? t("animalFarming").toLocaleUpperCase(locale === "sw" ? "sw-TZ" : "en-US") : locale === "sw" ? "MAZAO" : "CROPS"}</span>
           {visibleNavigation.map((item) => {
             const Icon = item.icon;
             return (
               <button
-                aria-current={activeSection === item.id ? "page" : undefined}
-                className={`nav-item ${activeSection === item.id ? "active" : ""}`}
+                aria-current={currentSection === item.id ? "page" : undefined}
+                className={`nav-item ${currentSection === item.id ? "active" : ""}`}
                 key={item.id}
-                onClick={() => setActiveSection(item.id)}
+                onClick={() => {
+                  setActiveSection(item.id);
+                }}
                 type="button"
               >
                 <Icon size={18} strokeWidth={1.8} />
@@ -1138,8 +1186,17 @@ function LabourSection({
             <FormSelect label={locale === "sw" ? "Kategoria" : "Category"} name="category" options={expenseCategories.map((category) => ({ value: category, label: titleCase(category) }))} />
             <FormField label={locale === "sw" ? `Kiasi (${data.farm.currency})` : `Amount (${data.farm.currency})`} name="amount" type="number" min="0.01" step="0.01" required />
             <FormField label={locale === "sw" ? "Tarehe" : "Date"} name="spentAt" type="date" />
-            <FormTextArea label={locale === "sw" ? "Mgao wa gharama (hiari)" : "Split allocations (optional)"} name="allocations" placeholder="cycle:cycle-id | 12000&#10;plot:plot-id | 5000" />
-            <p className="field-help field-wide">{locale === "sw" ? "Kila mstari: cycle:ID | kiasi au plot:ID | kiasi. Jumla lazima ilingane na gharama. Tumia mgao badala ya mzunguko mmoja." : "One line each: cycle:ID | amount or plot:ID | amount. Amounts must add up exactly; use this instead of selecting one cycle."}</p>
+            <FormSelect
+              label={locale === "sw" ? "Gawa gharama yote kwa mnyama/kikundi (hiari)" : "Allocate the full expense to an animal/group (optional)"}
+              name="animalTarget"
+              required={false}
+              options={[
+                ...data.animals.map((animal) => ({ value: `animal:${animal.id}`, label: `${animal.tagNumber} · ${animal.species}` })),
+                ...data.animalGroups.map((group) => ({ value: `group:${group.id}`, label: `${group.name} · ${group.species}` })),
+              ]}
+            />
+            <FormTextArea label={locale === "sw" ? "Mgao wa gharama uliogawanywa (hiari)" : "Split allocations (optional)"} name="allocations" placeholder="cycle:cycle-id | 12000&#10;plot:plot-id | 5000&#10;animal:tag-id | 3000&#10;group:group-id | 4500" />
+            <p className="field-help field-wide">{locale === "sw" ? "Chagua mnyama/kikundi ili kugawa kiasi chote, au weka mgao wa mistari mingi. Kila mstari cycle:ID, plot:ID, animal:ID au group:ID | kiasi; jumla ilingane na gharama." : "Select an animal/group for the full amount, or enter split lines. Each line is cycle:ID, plot:ID, animal:ID or group:ID | amount; allocations must equal the expense total."}</p>
             <FormTextArea label={locale === "sw" ? "Maelezo" : "Notes"} name="notes" />
           </ActionForm>
         </section>}
@@ -1218,7 +1275,7 @@ function LabourSection({
         {weeklyRows.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Mfanyakazi" : "Worker"}</th><th>{locale === "sw" ? "Saa" : "Hours"}</th><th>{locale === "sw" ? "Imelipwa" : "Paid"}</th><th>{locale === "sw" ? "Inadaiwa" : "Owed"}</th></tr></thead><tbody>{weeklyRows.map((row) => <tr key={row.name}><td>{row.name}</td><td>{number(row.hours, locale, 2)}</td><td>{money(row.paid, data.farm.currency, locale)}</td><td>{money(row.owed, data.farm.currency, locale)}</td></tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Hakuna saa zilizorekodiwa katika siku saba zilizopita." : "No work hours were recorded in the last 7 days."} />}
       </section>}
       {isOwner && <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Gharama za moja kwa moja" : "Direct expenses"}</h3><p>{data.expenses.length} {locale === "sw" ? "gharama" : "expenses"}</p></div></div>
-        {data.expenses.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Tarehe" : "Date"}</th><th>{locale === "sw" ? "Kategoria" : "Category"}</th><th>{locale === "sw" ? "Zao" : "Crop"}</th><th>{locale === "sw" ? "Kiasi" : "Amount"}</th><th>{locale === "sw" ? "Maelezo" : "Notes"}</th></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{dateLabel(expense.spentAt, locale)}</td><td>{titleCase(expense.category)}</td><td>{expense.cropName || (expense.allocations.length ? (locale === "sw" ? "Mgao wa pamoja" : "Split allocation") : "—")}</td><td>{money(expense.amount, expense.currency, locale)}</td><td>{expense.notes || "—"}</td></tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Gharama zitaonekana hapa." : "Direct expenses will appear here."} />}
+        {data.expenses.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Tarehe" : "Date"}</th><th>{locale === "sw" ? "Kategoria" : "Category"}</th><th>{locale === "sw" ? "Zao/mnyama/kikundi" : "Crop/animal/group"}</th><th>{locale === "sw" ? "Kiasi" : "Amount"}</th><th>{locale === "sw" ? "Maelezo" : "Notes"}</th></tr></thead><tbody>{data.expenses.map((expense) => <tr key={expense.id}><td>{dateLabel(expense.spentAt, locale)}</td><td>{titleCase(expense.category)}</td><td>{expense.cropName || (expense.allocationNames.length ? expense.allocationNames.join(", ") : expense.allocations.length ? (locale === "sw" ? "Mgao wa pamoja" : "Split allocation") : "—")}</td><td>{money(expense.amount, expense.currency, locale)}</td><td>{expense.notes || "—"}</td></tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Gharama zitaonekana hapa." : "Direct expenses will appear here."} />}
       </section>}
       {isOwner && <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Kazi za mashine" : "Machinery jobs"}</h3><p>{data.machineJobs.length} {locale === "sw" ? "rekodi" : "records"}</p></div></div>
         {data.machineJobs.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Tarehe" : "Date"}</th><th>{locale === "sw" ? "Kazi" : "Job"}</th><th>{locale === "sw" ? "Zao / kitalu" : "Crop / plot"}</th><th>{locale === "sw" ? "Saa" : "Hours"}</th><th>{locale === "sw" ? "Gharama" : "Cost"}</th></tr></thead><tbody>{data.machineJobs.map((job) => <tr key={job.id}><td>{dateLabel(job.performedAt, locale)}</td><td>{job.description}</td><td>{job.cropName || job.plotName || "—"}</td><td>{number(job.hours, locale, 2)}</td><td>{money(job.fuelCost + job.hireCost + job.maintenanceCost, job.currency, locale)}</td></tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Kazi za mashine zitaonekana hapa." : "Machinery jobs will appear here."} />}
@@ -1467,6 +1524,18 @@ function SettingsSection({
             <FormSelect label={locale === "sw" ? "Kipimo cha eneo" : "Default area unit"} name="areaUnit" defaultValue={data.farm.areaUnit} options={[{ value: "acre", label: locale === "sw" ? "Ekari" : "Acre" }, { value: "hectare", label: locale === "sw" ? "Hekta" : "Hectare" }, { value: "square metre", label: locale === "sw" ? "Mita ya mraba" : "Square metre" }]} />
             <FormField label={locale === "sw" ? "Saa za eneo (timezone)" : "Timezone"} name="timezone" defaultValue={data.farm.timezone} required />
             <FormField label={locale === "sw" ? "Namba ya mkulima ya taifa (si lazima)" : "National farmer ID (optional)"} name="nationalFarmerId" defaultValue={data.farm.nationalFarmerId ?? ""} />
+            <label className="division-setting">
+              <input
+                defaultChecked={data.farm.animalDivisionEnabled}
+                name="animalDivisionEnabled"
+                type="checkbox"
+                value="yes"
+              />
+              <span>
+                <strong>{locale === "sw" ? "Washa sehemu ya mifugo" : "Enable animal farming"}</strong>
+                <small>{locale === "sw" ? "Ongeza usajili, rekodi za kila siku na mipango ya chakula." : "Add animal registers, daily records and feed planning to this farm."}</small>
+              </span>
+            </label>
           </ActionForm>
         </section>}
         {isOwner && <section className="panel form-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Fungua eneo jingine la shamba" : "Create another farm workspace"}</h3><p>{locale === "sw" ? "Akaunti moja inaweza kuwa na maeneo mengi." : "One account can own more than one farm workspace."}</p></div><Plus size={20} /></div>

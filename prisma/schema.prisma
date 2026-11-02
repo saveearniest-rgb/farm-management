@@ -77,6 +77,7 @@ enum ExpenseCategory {
   HARVEST
   PACKAGING
   TRANSPORT
+  FEED
   OTHER
 }
 
@@ -84,6 +85,31 @@ enum StockMovementType {
   PURCHASE
   USAGE
   ADJUSTMENT
+}
+
+enum AnimalEventType {
+  BIRTH
+  PURCHASE
+  WEANING
+  MOVE
+  SALE
+  DEATH
+  CULLED
+  OTHER
+}
+
+enum AnimalDailyRecordType {
+  FEEDING
+  WATER
+  MILK
+  EGGS
+  HEALTH_CHECK
+  OTHER
+}
+
+enum AnimalTrackingMode {
+  INDIVIDUAL
+  HEAD_COUNT
 }
 
 enum DataRequestType {
@@ -139,45 +165,51 @@ model User {
 }
 
 model Farm {
-  id               String   @id @default(cuid())
-  name             String
-  region           String?
-  district         String?
-  currency         String   @default("TZS")
-  areaUnit         String   @default("acre")
-  totalAreaValue   Decimal? @db.Decimal(12, 4)
-  totalAreaUnit    String   @default("acre")
-  timezone         String   @default("Africa/Dar_es_Salaam")
-  nationalFarmerId String?
-  createdAt        DateTime @default(now())
+  id                    String   @id @default(cuid())
+  name                  String
+  region                String?
+  district              String?
+  currency              String   @default("TZS")
+  areaUnit              String   @default("acre")
+  totalAreaValue        Decimal? @db.Decimal(12, 4)
+  totalAreaUnit         String   @default("acre")
+  timezone              String   @default("Africa/Dar_es_Salaam")
+  nationalFarmerId      String?
+  animalDivisionEnabled Boolean  @default(false)
+  createdAt             DateTime @default(now())
 
-  members           FarmMember[]
-  landHoldings      LandHolding[]
-  plots             Plot[]
-  cropTypes         CropType[]
-  cropReferences    CropReferenceItem[]
-  cropCycles        CropCycle[]
-  workers           Worker[]
-  expenses          Expense[]
-  machineJobs       MachineJob[]
-  assets            Asset[]
-  assetUsages       AssetUsage[]
-  assetMaintenances AssetMaintenance[]
-  activityLogs      ActivityLog[]
-  defaultWageTzs    Decimal?            @db.Decimal(12, 2)
-  stockItems        StockItem[]
-  suppliers         Supplier[]
-  stockMovements    StockMovement[]
-  dataRequests      DataRequest[]
-  consents          ConsentRecord[]
-  auditLogs         AuditLog[]
-  invitations       FarmInvitation[]
-  disputes          TenureDispute[]
-  attachments       FileAttachment[]
-  weatherLogs       WeatherLog[]
-  scoutingLogs      ScoutingLog[]
-  sprayRecords      SprayRecord[]
-  subsidies         SubsidyReceipt[]
+  members            FarmMember[]
+  landHoldings       LandHolding[]
+  plots              Plot[]
+  cropTypes          CropType[]
+  cropReferences     CropReferenceItem[]
+  cropCycles         CropCycle[]
+  workers            Worker[]
+  expenses           Expense[]
+  machineJobs        MachineJob[]
+  assets             Asset[]
+  assetUsages        AssetUsage[]
+  assetMaintenances  AssetMaintenance[]
+  activityLogs       ActivityLog[]
+  defaultWageTzs     Decimal?            @db.Decimal(12, 2)
+  stockItems         StockItem[]
+  suppliers          Supplier[]
+  stockMovements     StockMovement[]
+  dataRequests       DataRequest[]
+  consents           ConsentRecord[]
+  auditLogs          AuditLog[]
+  invitations        FarmInvitation[]
+  disputes           TenureDispute[]
+  attachments        FileAttachment[]
+  weatherLogs        WeatherLog[]
+  scoutingLogs       ScoutingLog[]
+  sprayRecords       SprayRecord[]
+  subsidies          SubsidyReceipt[]
+  animals            Animal[]
+  animalGroups       AnimalGroup[]
+  animalEvents       AnimalEvent[]
+  animalDailyRecords AnimalDailyRecord[]
+  feedRations        FeedRation[]
 }
 
 model FarmMember {
@@ -508,20 +540,26 @@ model Expense {
 }
 
 model ExpenseAllocation {
-  id        String  @id @default(cuid())
-  farmId    String
-  expenseId String
-  cycleId   String?
-  plotId    String?
-  amount    Decimal @db.Decimal(14, 2)
-  currency  String  @default("TZS")
+  id            String  @id @default(cuid())
+  farmId        String
+  expenseId     String
+  cycleId       String?
+  plotId        String?
+  animalId      String?
+  animalGroupId String?
+  amount        Decimal @db.Decimal(14, 2)
+  currency      String  @default("TZS")
 
-  expense Expense    @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-  cycle   CropCycle? @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-  plot    Plot?      @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  expense     Expense      @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  cycle       CropCycle?   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  plot        Plot?        @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
 
   @@index([farmId, cycleId])
   @@index([farmId, plotId])
+  @@index([farmId, animalId])
+  @@index([farmId, animalGroupId])
 }
 
 model MachineJob {
@@ -694,8 +732,10 @@ model StockItem {
   lowStockThreshold Decimal?        @db.Decimal(14, 4)
   createdAt         DateTime        @default(now())
 
-  farm      Farm            @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  movements StockMovement[]
+  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  movements          StockMovement[]
+  feedRations        FeedRation[]
+  animalDailyRecords AnimalDailyRecord[]
 
   @@unique([farmId, name])
 }
@@ -714,29 +754,150 @@ model Supplier {
 }
 
 model StockMovement {
-  id           String            @id @default(cuid())
-  farmId       String
-  itemId       String
-  supplierId   String?
-  cycleId      String?
-  taskId       String?
-  type         StockMovementType
-  quantity     Decimal           @db.Decimal(14, 4)
-  unit         String
-  unitCost     Decimal?          @db.Decimal(14, 4)
-  currency     String            @default("TZS")
-  lotReference String?
-  movedAt      DateTime          @default(now())
-  notes        String?
+  id            String            @id @default(cuid())
+  farmId        String
+  itemId        String
+  supplierId    String?
+  cycleId       String?
+  animalId      String?
+  animalGroupId String?
+  taskId        String?
+  type          StockMovementType
+  quantity      Decimal           @db.Decimal(14, 4)
+  unit          String
+  unitCost      Decimal?          @db.Decimal(14, 4)
+  currency      String            @default("TZS")
+  lotReference  String?
+  movedAt       DateTime          @default(now())
+  notes         String?
 
-  farm     Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  item     StockItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  supplier Supplier?  @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  cycle    CropCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
-  task     Task?      @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  item        StockItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  supplier    Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  cycle       CropCycle?   @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: SetNull)
+  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: SetNull)
+  task        Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
   @@index([farmId, itemId, movedAt])
   @@index([farmId, cycleId, type])
+  @@index([farmId, animalId, movedAt])
+  @@index([farmId, animalGroupId, movedAt])
+}
+
+model Animal {
+  id            String    @id @default(cuid())
+  farmId        String
+  tagNumber     String
+  species       String
+  breed         String?
+  sex           String?
+  birthDate     DateTime?
+  source        String?
+  purchasePrice Decimal?  @db.Decimal(14, 2)
+  seller        String?
+  groupId       String?
+  status        String    @default("ACTIVE")
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  group              AnimalGroup?        @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  events             AnimalEvent[]
+  dailyRecords       AnimalDailyRecord[]
+  expenseAllocations ExpenseAllocation[]
+  stockMovements     StockMovement[]
+
+  @@unique([farmId, tagNumber])
+  @@index([farmId, species, status])
+  @@index([farmId, groupId])
+}
+
+model AnimalGroup {
+  id            String             @id @default(cuid())
+  farmId        String
+  name          String
+  species       String
+  trackingMode  AnimalTrackingMode @default(HEAD_COUNT)
+  startDate     DateTime           @default(now())
+  startingCount Int
+  notes         String?
+  archivedAt    DateTime?
+  createdAt     DateTime           @default(now())
+
+  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animals            Animal[]
+  events             AnimalEvent[]
+  dailyRecords       AnimalDailyRecord[]
+  feedRations        FeedRation[]
+  expenseAllocations ExpenseAllocation[]
+  stockMovements     StockMovement[]
+
+  @@unique([farmId, name])
+  @@index([farmId, species, startDate])
+}
+
+model AnimalEvent {
+  id            String          @id @default(cuid())
+  farmId        String
+  animalId      String?
+  animalGroupId String?
+  type          AnimalEventType
+  occurredAt    DateTime        @default(now())
+  quantity      Int?
+  purchaseCost  Decimal?        @db.Decimal(14, 2)
+  seller        String?
+  notes         String?
+  createdAt     DateTime        @default(now())
+
+  farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, animalId, occurredAt])
+  @@index([farmId, animalGroupId, occurredAt])
+}
+
+model AnimalDailyRecord {
+  id            String                @id @default(cuid())
+  farmId        String
+  animalId      String?
+  animalGroupId String?
+  feedItemId    String?
+  type          AnimalDailyRecordType
+  recordedAt    DateTime              @default(now())
+  quantity      Decimal?              @db.Decimal(14, 4)
+  unit          String?
+  notes         String?
+  offlineId     String?               @unique
+  createdAt     DateTime              @default(now())
+
+  farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  feedItem    StockItem?   @relation(fields: [feedItemId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, recordedAt])
+  @@index([farmId, animalId, recordedAt])
+  @@index([farmId, animalGroupId, recordedAt])
+}
+
+model FeedRation {
+  id              String   @id @default(cuid())
+  farmId          String
+  animalGroupId   String
+  itemId          String
+  quantityPerHead Decimal  @db.Decimal(14, 4)
+  unit            String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  farm        Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  item        StockItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([farmId, animalGroupId, itemId])
+  @@index([farmId, animalGroupId])
 }
 
 model ConsentRecord {

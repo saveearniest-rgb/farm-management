@@ -279,6 +279,7 @@ export async function updateFarmSettingsAction(
     totalAreaUnit: z.enum(["acre", "hectare"]),
     timezone: z.string().trim().min(1).max(80),
     nationalFarmerId: z.string().trim().max(100).optional(),
+    animalDivisionEnabled: z.boolean(),
   }).safeParse({
     name: value(formData, "name"),
     region: value(formData, "region"),
@@ -289,6 +290,7 @@ export async function updateFarmSettingsAction(
     totalAreaUnit: value(formData, "totalAreaUnit"),
     timezone: value(formData, "timezone"),
     nationalFarmerId: value(formData, "nationalFarmerId"),
+    animalDivisionEnabled: value(formData, "animalDivisionEnabled") === "yes",
   });
   if (!parsed.success) return invalid("Enter a farm name and choose TZS or USD.");
 
@@ -304,6 +306,7 @@ export async function updateFarmSettingsAction(
       totalAreaUnit: parsed.data.totalAreaUnit,
       timezone: parsed.data.timezone,
       nationalFarmerId: parsed.data.nationalFarmerId || null,
+      animalDivisionEnabled: parsed.data.animalDivisionEnabled,
     },
   });
   revalidatePath("/");

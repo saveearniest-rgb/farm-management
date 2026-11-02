@@ -236,6 +236,100 @@ a {
   font-size: 10px;
 }
 
+.division-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 20px;
+  padding: 4px;
+  border: 1px solid #e6ece3;
+  border-radius: 12px;
+  background: #f7f9f5;
+}
+
+.division-switch.single-division {
+  grid-template-columns: 1fr;
+}
+
+.division-setting {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.division-setting input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--green);
+}
+
+.division-setting span {
+  display: grid;
+  gap: 4px;
+}
+
+.division-setting strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.division-setting small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.division-switch button {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #748176;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.division-switch button.active {
+  background: #e7f0e2;
+  color: #426f4a;
+  box-shadow: 0 1px 3px rgb(46 73 43 / 9%);
+}
+
+.division-switch button svg {
+  flex: 0 0 auto;
+}
+
+.animal-row-action .form-footer {
+  display: block;
+  margin: 0;
+}
+
+.animal-row-action .form-message {
+  max-width: 130px;
+  margin: 3px 0 0;
+  font-size: 9px;
+}
+
+.animal-row-action .button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
 .side-nav {
   display: flex;
   flex: 1;
@@ -2541,6 +2635,25 @@ html[data-theme="dark"] .sidebar {
   background: #18261d;
 }
 
+html[data-theme="dark"] .division-switch {
+  border-color: #354c3a;
+  background: #1d2e23;
+}
+
+html[data-theme="dark"] .division-setting {
+  border-color: #354c3a;
+  background: #1d2e23;
+}
+
+html[data-theme="dark"] .division-switch button {
+  color: #b7c8bb;
+}
+
+html[data-theme="dark"] .division-switch button.active {
+  background: #293d30;
+  color: #c5e2bd;
+}
+
 html[data-theme="dark"] .account-menu-panel {
   border-color: var(--line);
   background: var(--surface);
@@ -2756,6 +2869,7 @@ html[data-theme="dark"] .mobile-page-title {
   .workspace-chevron,
   .nav-group-label,
   .nav-item span,
+  .division-switch span,
   .sidebar-bottom .connectivity-card,
   .profile-info,
   .signout-button,
@@ -2779,6 +2893,23 @@ html[data-theme="dark"] .mobile-page-title {
     align-items: center;
     gap: 8px;
     margin-top: 26px;
+  }
+
+  .division-switch {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    margin-top: 20px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .division-switch button {
+    width: 44px;
+    height: 43px;
+    min-height: 43px;
+    padding: 0;
+    border-radius: 10px;
   }
 
   .nav-item {

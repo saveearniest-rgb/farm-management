@@ -1,6 +1,8 @@
 export type ParsedExpenseAllocation = {
   cycleId?: string;
   plotId?: string;
+  animalId?: string;
+  animalGroupId?: string;
   amount: number;
 };
 
@@ -13,13 +15,16 @@ export function parseExpenseAllocations(
 
   const allocations: ParsedExpenseAllocation[] = [];
   for (const line of lines) {
-    const match = /^(cycle|plot):([^|]+)\|\s*(\d+(?:\.\d{1,2})?)$/.exec(line);
+    const match = /^(cycle|plot|animal|group):([^|]+)\|\s*(\d+(?:\.\d{1,2})?)$/.exec(line);
     const targetId = match?.[2]?.trim();
     if (!match || !targetId) {
-      return { allocations: null, error: "Use one allocation per line: cycle:<id> | amount or plot:<id> | amount." };
+      return { allocations: null, error: "Use one allocation per line: cycle:<id>, plot:<id>, animal:<id> or group:<id> | amount." };
     }
     allocations.push({
-      ...(match[1] === "cycle" ? { cycleId: targetId } : { plotId: targetId }),
+      ...(match[1] === "cycle" ? { cycleId: targetId } : {}),
+      ...(match[1] === "plot" ? { plotId: targetId } : {}),
+      ...(match[1] === "animal" ? { animalId: targetId } : {}),
+      ...(match[1] === "group" ? { animalGroupId: targetId } : {}),
       amount: Number(match[3]),
     });
   }

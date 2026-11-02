@@ -41,6 +41,9 @@ export async function getDashboardData(context: Context) {
     rawAssetUsages,
     rawAssetMaintenances,
     rawAttachments,
+    rawAnimalGroups,
+    rawAnimals,
+    rawAnimalDailyRecords,
   ] = await Promise.all([
     db.landHolding.findMany({
       where: { farmId, archivedAt: null },
@@ -135,7 +138,20 @@ export async function getDashboardData(context: Context) {
           take: 150,
           include: {
             cycle: { include: { cropType: { select: { name: true } } } },
-            allocations: { where: { farmId }, select: { cycleId: true, amount: true } },
+            allocations: {
+              where: { farmId },
+              select: {
+                cycleId: true,
+                plotId: true,
+                animalId: true,
+                animalGroupId: true,
+                amount: true,
+                animal: { select: { tagNumber: true } },
+                animalGroup: { select: { name: true } },
+                cycle: { select: { cropType: { select: { name: true } } } },
+                plot: { select: { name: true } },
+              },
+            },
           },
         })
       : Promise.resolve([]),
@@ -267,6 +283,65 @@ export async function getDashboardData(context: Context) {
         where: { farmId },
         orderBy: { createdAt: "desc" },
         take: 100,
+    }),
+    db.animalGroup.findMany({
+      where: { farmId, archivedAt: null },
+      orderBy: { name: "asc" },
+      include: {
+        events: {
+          orderBy: { occurredAt: "desc" },
+          select: {
+            id: true,
+            type: true,
+            occurredAt: true,
+            quantity: true,
+            purchaseCost: isOwner,
+            seller: isOwner,
+            notes: true,
+          },
+        },
+        feedRations: { include: { item: { select: { name: true, unit: true } } } },
+      },
+    }),
+    db.animal.findMany({
+      where: { farmId, archivedAt: null },
+      orderBy: { tagNumber: "asc" },
+      select: {
+        id: true,
+        tagNumber: true,
+        species: true,
+        breed: true,
+        sex: true,
+        birthDate: true,
+        source: true,
+        purchasePrice: isOwner,
+        seller: isOwner,
+        status: true,
+        groupId: true,
+        group: { select: { id: true, name: true } },
+        events: {
+          orderBy: { occurredAt: "desc" },
+          select: {
+            id: true,
+            type: true,
+            occurredAt: true,
+            quantity: true,
+            purchaseCost: isOwner,
+            seller: isOwner,
+            notes: true,
+          },
+        },
+      },
+    }),
+    db.animalDailyRecord.findMany({
+      where: { farmId },
+      orderBy: { recordedAt: "desc" },
+      take: 150,
+      include: {
+        animal: { select: { id: true, tagNumber: true } },
+        animalGroup: { select: { id: true, name: true } },
+        feedItem: { select: { id: true, name: true, unit: true } },
+      },
     }),
   ]);
 
@@ -497,8 +572,21 @@ export async function getDashboardData(context: Context) {
       notes: expense.notes,
       cycleId: expense.cycleId,
       cropName: expense.cycle?.cropType.name ?? null,
+      allocationNames: expense.allocations
+        .map((allocation) =>
+          allocation.animal?.tagNumber ??
+          allocation.animalGroup?.name ??
+          allocation.cycle?.cropType.name ??
+          allocation.plot?.name,
+        )
+        .filter((name): name is string => Boolean(name)),
       allocations: expense.allocations.map((allocation) => ({
         cycleId: allocation.cycleId,
+        plotId: allocation.plotId,
+        animalId: allocation.animalId,
+        animalGroupId: allocation.animalGroupId,
+        animalTag: allocation.animal?.tagNumber ?? null,
+        animalGroupName: allocation.animalGroup?.name ?? null,
         amount: numeric(allocation.amount) ?? 0,
       })),
     })),
@@ -698,6 +786,67 @@ export async function getDashboardData(context: Context) {
       receivedAt: iso(receipt.receivedAt),
       source: receipt.source,
       notes: receipt.notes,
+    })),
+    animalGroups: rawAnimalGroups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      species: group.species,
+      trackingMode: group.trackingMode,
+      startDate: iso(group.startDate),
+      startingCount: group.startingCount,
+      notes: group.notes,
+      events: group.events.map((event) => ({
+        id: event.id,
+        type: event.type,
+        occurredAt: iso(event.occurredAt),
+        quantity: event.quantity,
+        purchaseCost: isOwner ? numeric(event.purchaseCost) : null,
+        seller: isOwner ? event.seller : null,
+        notes: event.notes,
+      })),
+      feedRations: group.feedRations.map((ration) => ({
+        id: ration.id,
+        itemId: ration.itemId,
+        itemName: ration.item.name,
+        quantityPerHead: numeric(ration.quantityPerHead) ?? 0,
+        unit: ration.unit,
+      })),
+    })),
+    animals: rawAnimals.map((animal) => ({
+      id: animal.id,
+      tagNumber: animal.tagNumber,
+      species: animal.species,
+      breed: animal.breed,
+      sex: animal.sex,
+      birthDate: iso(animal.birthDate),
+      source: animal.source,
+      purchasePrice: isOwner ? numeric(animal.purchasePrice) : null,
+      seller: isOwner ? animal.seller : null,
+      status: animal.status,
+      groupId: animal.groupId,
+      groupName: animal.group?.name ?? null,
+      events: animal.events.map((event) => ({
+        id: event.id,
+        type: event.type,
+        occurredAt: iso(event.occurredAt),
+        quantity: event.quantity,
+        purchaseCost: isOwner ? numeric(event.purchaseCost) : null,
+        seller: isOwner ? event.seller : null,
+        notes: event.notes,
+      })),
+    })),
+    animalDailyRecords: rawAnimalDailyRecords.map((record) => ({
+      id: record.id,
+      type: record.type,
+      recordedAt: iso(record.recordedAt),
+      quantity: numeric(record.quantity),
+      unit: record.unit,
+      notes: record.notes,
+      animalId: record.animalId,
+      animalTag: record.animal?.tagNumber ?? null,
+      animalGroupId: record.animalGroupId,
+      animalGroupName: record.animalGroup?.name ?? null,
+      feedItemName: record.feedItem?.name ?? null,
     })),
   };
 }
