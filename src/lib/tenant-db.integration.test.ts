@@ -16,6 +16,8 @@ let userBId = "";
 let farmBPlotId = "";
 let farmBAnimalGroupId = "";
 let farmBAnimalId = "";
+let farmBHealthProductId = "";
+let farmBPerformanceRecordId = "";
 
 describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
   beforeAll(async () => {
@@ -95,6 +97,27 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       select: { id: true },
     });
     farmBAnimalId = animalB.id;
+    const healthProductB = await tenantDb(farmB.id, userB.id).animalHealthProduct.create({
+      data: {
+        farmId: farmB.id,
+        name: `Farm B vaccine ${suffix}`,
+        type: "VACCINE",
+        withdrawalDays: 0,
+      },
+      select: { id: true },
+    });
+    farmBHealthProductId = healthProductB.id;
+    const performanceRecordB = await tenantDb(farmB.id, userB.id).animalPerformanceRecord.create({
+      data: {
+        farmId: farmB.id,
+        animalId: animalB.id,
+        type: "WEIGHT",
+        quantity: 20,
+        unit: "kg",
+      },
+      select: { id: true },
+    });
+    farmBPerformanceRecordId = performanceRecordB.id;
   }, 60_000);
 
   afterAll(async () => {
@@ -130,6 +153,20 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       where: { id: farmBAnimalId, farmId: farmBId },
       data: { status: "DEAD" },
     });
+    const hiddenHealthProduct = await farmA.animalHealthProduct.findFirst({
+      where: { id: farmBHealthProductId, farmId: farmBId },
+    });
+    const changedHealthProducts = await farmA.animalHealthProduct.updateMany({
+      where: { id: farmBHealthProductId, farmId: farmBId },
+      data: { name: "cross-tenant overwrite" },
+    });
+    const hiddenPerformanceRecord = await farmA.animalPerformanceRecord.findFirst({
+      where: { id: farmBPerformanceRecordId, farmId: farmBId },
+    });
+    const changedPerformanceRecords = await farmA.animalPerformanceRecord.updateMany({
+      where: { id: farmBPerformanceRecordId, farmId: farmBId },
+      data: { quantity: 999 },
+    });
     const stampedHolding = await farmA.landHolding.create({
       data: {
         farmId: farmBId,
@@ -144,6 +181,10 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
     expect(changedAnimalGroups.count).toBe(0);
     expect(hiddenAnimal).toBeNull();
     expect(changedAnimals.count).toBe(0);
+    expect(hiddenHealthProduct).toBeNull();
+    expect(changedHealthProducts.count).toBe(0);
+    expect(hiddenPerformanceRecord).toBeNull();
+    expect(changedPerformanceRecords.count).toBe(0);
     expect(stampedHolding.farmId).toBe(farmAId);
 
     const originalPlot = await db.plot.findUnique({

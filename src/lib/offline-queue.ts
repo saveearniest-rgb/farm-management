@@ -8,7 +8,10 @@ export type OfflineActionKey =
   | "weather"
   | "scouting"
   | "spray"
-  | "animal-daily-record";
+  | "animal-daily-record"
+  | "animal-health-case"
+  | "animal-health-record"
+  | "animal-performance-record";
 
 export type PendingAction = {
   id: string;

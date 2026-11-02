@@ -1608,6 +1608,32 @@ td small {
   color: #a27847;
 }
 
+.alert-card {
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid #f0e6d9;
+  border-radius: 12px;
+  background: #fbf4e9;
+  color: #765a37;
+  font-size: 12px;
+}
+
+.alert-card ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.record-list {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: #647168;
+  font-size: 12px;
+}
+
 .data-row {
   display: flex;
   align-items: center;
@@ -2710,6 +2736,16 @@ html[data-theme="dark"] .auth-footer span {
 
 html[data-theme="dark"] .mobile-page-title {
   color: var(--ink);
+}
+
+html[data-theme="dark"] .alert-card {
+  border-color: #67553a;
+  background: #352e21;
+  color: #e6d3ac;
+}
+
+html[data-theme="dark"] .record-list {
+  color: var(--muted);
 }
 
 @media (max-width: 650px) {

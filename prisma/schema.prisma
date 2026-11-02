@@ -112,6 +112,27 @@ enum AnimalTrackingMode {
   HEAD_COUNT
 }
 
+enum AnimalHealthProductType {
+  VACCINE
+  MEDICINE
+  OTHER
+}
+
+enum AnimalHealthRecordType {
+  VACCINATION
+  TREATMENT
+  DEWORMING
+  DIPPING
+  TICK_CONTROL
+  VET_VISIT
+}
+
+enum AnimalPerformanceType {
+  WEIGHT
+  MILK
+  EGGS
+}
+
 enum DataRequestType {
   EXPORT
   DELETION
@@ -178,38 +199,43 @@ model Farm {
   animalDivisionEnabled Boolean  @default(false)
   createdAt             DateTime @default(now())
 
-  members            FarmMember[]
-  landHoldings       LandHolding[]
-  plots              Plot[]
-  cropTypes          CropType[]
-  cropReferences     CropReferenceItem[]
-  cropCycles         CropCycle[]
-  workers            Worker[]
-  expenses           Expense[]
-  machineJobs        MachineJob[]
-  assets             Asset[]
-  assetUsages        AssetUsage[]
-  assetMaintenances  AssetMaintenance[]
-  activityLogs       ActivityLog[]
-  defaultWageTzs     Decimal?            @db.Decimal(12, 2)
-  stockItems         StockItem[]
-  suppliers          Supplier[]
-  stockMovements     StockMovement[]
-  dataRequests       DataRequest[]
-  consents           ConsentRecord[]
-  auditLogs          AuditLog[]
-  invitations        FarmInvitation[]
-  disputes           TenureDispute[]
-  attachments        FileAttachment[]
-  weatherLogs        WeatherLog[]
-  scoutingLogs       ScoutingLog[]
-  sprayRecords       SprayRecord[]
-  subsidies          SubsidyReceipt[]
-  animals            Animal[]
-  animalGroups       AnimalGroup[]
-  animalEvents       AnimalEvent[]
-  animalDailyRecords AnimalDailyRecord[]
-  feedRations        FeedRation[]
+  members                    FarmMember[]
+  landHoldings               LandHolding[]
+  plots                      Plot[]
+  cropTypes                  CropType[]
+  cropReferences             CropReferenceItem[]
+  cropCycles                 CropCycle[]
+  workers                    Worker[]
+  expenses                   Expense[]
+  machineJobs                MachineJob[]
+  assets                     Asset[]
+  assetUsages                AssetUsage[]
+  assetMaintenances          AssetMaintenance[]
+  activityLogs               ActivityLog[]
+  defaultWageTzs             Decimal?                    @db.Decimal(12, 2)
+  stockItems                 StockItem[]
+  suppliers                  Supplier[]
+  stockMovements             StockMovement[]
+  dataRequests               DataRequest[]
+  consents                   ConsentRecord[]
+  auditLogs                  AuditLog[]
+  invitations                FarmInvitation[]
+  disputes                   TenureDispute[]
+  attachments                FileAttachment[]
+  weatherLogs                WeatherLog[]
+  scoutingLogs               ScoutingLog[]
+  sprayRecords               SprayRecord[]
+  subsidies                  SubsidyReceipt[]
+  animals                    Animal[]
+  animalGroups               AnimalGroup[]
+  animalEvents               AnimalEvent[]
+  animalDailyRecords         AnimalDailyRecord[]
+  feedRations                FeedRation[]
+  animalHealthProducts       AnimalHealthProduct[]
+  animalVaccinationSchedules AnimalVaccinationSchedule[]
+  animalHealthCases          AnimalHealthCase[]
+  animalHealthRecords        AnimalHealthRecord[]
+  animalPerformanceRecords   AnimalPerformanceRecord[]
 }
 
 model FarmMember {
@@ -801,12 +827,15 @@ model Animal {
   archivedAt    DateTime?
   createdAt     DateTime  @default(now())
 
-  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  group              AnimalGroup?        @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  farm               Farm                      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  group              AnimalGroup?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
   events             AnimalEvent[]
   dailyRecords       AnimalDailyRecord[]
   expenseAllocations ExpenseAllocation[]
   stockMovements     StockMovement[]
+  healthCases        AnimalHealthCase[]
+  healthRecords      AnimalHealthRecord[]
+  performanceRecords AnimalPerformanceRecord[]
 
   @@unique([farmId, tagNumber])
   @@index([farmId, species, status])
@@ -825,13 +854,17 @@ model AnimalGroup {
   archivedAt    DateTime?
   createdAt     DateTime           @default(now())
 
-  farm               Farm                @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  animals            Animal[]
-  events             AnimalEvent[]
-  dailyRecords       AnimalDailyRecord[]
-  feedRations        FeedRation[]
-  expenseAllocations ExpenseAllocation[]
-  stockMovements     StockMovement[]
+  farm                       Farm                        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animals                    Animal[]
+  events                     AnimalEvent[]
+  dailyRecords               AnimalDailyRecord[]
+  feedRations                FeedRation[]
+  expenseAllocations         ExpenseAllocation[]
+  stockMovements             StockMovement[]
+  healthCases                AnimalHealthCase[]
+  healthRecords              AnimalHealthRecord[]
+  performanceRecords         AnimalPerformanceRecord[]
+  animalVaccinationSchedules AnimalVaccinationSchedule[]
 
   @@unique([farmId, name])
   @@index([farmId, species, startDate])
@@ -898,6 +931,131 @@ model FeedRation {
 
   @@unique([farmId, animalGroupId, itemId])
   @@index([farmId, animalGroupId])
+}
+
+model AnimalHealthProduct {
+  id             String                  @id @default(cuid())
+  farmId         String
+  name           String
+  type           AnimalHealthProductType
+  diseaseCovered String?
+  dose           String?
+  route          String?
+  storage        String?
+  batch          String?
+  expiresAt      DateTime?
+  costPerDose    Decimal?                @db.Decimal(14, 4)
+  withdrawalDays Int                     @default(0)
+  archivedAt     DateTime?
+  createdAt      DateTime                @default(now())
+
+  farm      Farm                        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  schedules AnimalVaccinationSchedule[]
+  records   AnimalHealthRecord[]
+
+  @@index([farmId, type, archivedAt])
+}
+
+model AnimalVaccinationSchedule {
+  id              String    @id @default(cuid())
+  farmId          String
+  productId       String
+  title           String
+  species         String
+  breed           String?
+  animalGroupId   String?
+  ageDays         Int?
+  firstDueAt      DateTime?
+  repeatEveryDays Int?
+  notes           String?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  farm        Farm                 @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  product     AnimalHealthProduct  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  animalGroup AnimalGroup?         @relation(fields: [animalGroupId], references: [id], onDelete: SetNull)
+  records     AnimalHealthRecord[]
+
+  @@index([farmId, species, breed, archivedAt])
+  @@index([farmId, animalGroupId])
+}
+
+model AnimalHealthCase {
+  id            String    @id @default(cuid())
+  farmId        String
+  animalId      String?
+  animalGroupId String?
+  symptoms      String
+  diagnosis     String?
+  diagnosedBy   String?
+  outcome       String?
+  openedAt      DateTime  @default(now())
+  resolvedAt    DateTime?
+  offlineId     String?   @unique
+  createdAt     DateTime  @default(now())
+
+  farm        Farm                 @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?              @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup?         @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  records     AnimalHealthRecord[]
+
+  @@index([farmId, openedAt, resolvedAt])
+  @@index([farmId, animalId, openedAt])
+  @@index([farmId, animalGroupId, openedAt])
+}
+
+model AnimalHealthRecord {
+  id              String                 @id @default(cuid())
+  farmId          String
+  animalId        String?
+  animalGroupId   String?
+  healthCaseId    String?
+  productId       String?
+  scheduleId      String?
+  type            AnimalHealthRecordType
+  administeredAt  DateTime               @default(now())
+  dose            String?
+  route           String?
+  batch           String?
+  cost            Decimal?               @db.Decimal(14, 2)
+  withdrawalDays  Int                    @default(0)
+  withdrawalUntil DateTime?
+  notes           String?
+  offlineId       String?                @unique
+  createdAt       DateTime               @default(now())
+
+  farm        Farm                       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?                    @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup?               @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  healthCase  AnimalHealthCase?          @relation(fields: [healthCaseId], references: [id], onDelete: SetNull)
+  product     AnimalHealthProduct?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+  schedule    AnimalVaccinationSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, animalId, administeredAt])
+  @@index([farmId, animalGroupId, administeredAt])
+  @@index([farmId, withdrawalUntil])
+}
+
+model AnimalPerformanceRecord {
+  id            String                @id @default(cuid())
+  farmId        String
+  animalId      String?
+  animalGroupId String?
+  type          AnimalPerformanceType
+  quantity      Decimal               @db.Decimal(14, 4)
+  unit          String
+  recordedAt    DateTime              @default(now())
+  notes         String?
+  offlineId     String?               @unique
+  createdAt     DateTime              @default(now())
+
+  farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, type, recordedAt])
+  @@index([farmId, animalId, recordedAt])
+  @@index([farmId, animalGroupId, recordedAt])
 }
 
 model ConsentRecord {

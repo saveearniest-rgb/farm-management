@@ -5,6 +5,9 @@ import {
   createNurseryCheckAction,
   createWorkEntryAction,
   recordAnimalDailyAction,
+  recordAnimalHealthAction,
+  recordAnimalHealthCaseAction,
+  recordAnimalPerformanceAction,
   recordScoutingAction,
   recordSprayAction,
   recordWeatherAction,
@@ -22,6 +25,9 @@ const actions: Record<OfflineActionKey, (state: FormState, data: FormData) => Pr
   scouting: recordScoutingAction,
   spray: recordSprayAction,
   "animal-daily-record": recordAnimalDailyAction,
+  "animal-health-case": recordAnimalHealthCaseAction,
+  "animal-health-record": recordAnimalHealthAction,
+  "animal-performance-record": recordAnimalPerformanceAction,
 };
 
 async function submitPendingAction(item: PendingAction) {

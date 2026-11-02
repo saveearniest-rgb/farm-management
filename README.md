@@ -81,7 +81,15 @@ The Crop cycles section includes farm-owned disease and pesticide reference entr
 6. Record a daily feeding entry against an animal or group. It saves offline when disconnected and, on sync, reduces the shared feed stock. Water, milk, egg and health-check notes can also be recorded; health checks are records only and are not diagnoses.
 7. In **Labour & costs**, select a group or tagged animal to allocate an expense directly. Purchase prices and seller details are retained on the animal/event record; enter expenses separately when they should be included in the cost ledger.
 
-Animal reference assumptions and veterinary schedules are not preloaded. Confirm health, vaccination, feed and legal guidance with the farm's livestock professional or relevant local authority. Animal A2 (health, vaccination and performance) and A3 (breeding, income, capital investment and planning) are not included yet.
+### Animal farming A2 walkthrough
+
+1. Register the farm's own vaccine and medicine batches, including expiry and withdrawal period. No products or veterinary guidance are preloaded.
+2. Create vaccination schedules using the farm vet's verified dates or age intervals. Age-based reminders require birth dates; group schedules require a first due date.
+3. Record health cases, treatments or vaccinations against an animal or group. Health cases and health records can be queued offline and sync when connected.
+4. Review open cases, active withdrawal periods, and milk/egg records collected inside a withdrawal period. Sales warnings will be connected when livestock sales are implemented.
+5. Record individual or group weights, milk and eggs. The app calculates daily weight gain only when comparable individual weights use one consistent unit. Birth and weaning continue to be recorded as animal events.
+
+Animal reference assumptions and veterinary schedules are not preloaded. Confirm health, vaccination, feed and legal guidance with the farm's livestock professional or relevant local authority. Shamba records information and flags dates; it does not diagnose, prescribe, or replace a vet. Animal A3 (breeding, income, capital investment and planning) is not included yet.
 
 Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on local disk. The encryption key is derived from `AUTH_SECRET`, so keep that secret stable and configure persistent storage; see [docs/operations.md](./docs/operations.md).
 
@@ -109,10 +117,11 @@ Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on loc
 - Weather observations, pest/disease scouting, spray records and pre-harvest interval warnings
 - Worker records, hours, recent pay summary, split expenses, an asset register with usage and maintenance costs, and basic stock and suppliers/lots
 - Animal farming A1: tagged animal and group registers, event timelines with calculated group counts, daily animal records, farm-entered feed rations, feed planning against the shared stock ledger, and expense allocations to animals or groups
+- Animal farming A2: farm-managed vaccine/medicine batches and vaccination schedules, health cases and treatment records, withdrawal-period and collection warnings, and offline-capable weight, milk and egg records
 - Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
 - Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export
-- Installable PWA metadata and local IndexedDB queueing for field notes, task updates, nursery checks, labour, expenses, weather, scouting and spray records
+- Installable PWA metadata and local IndexedDB queueing for field notes, task updates, nursery checks, labour, expenses, weather, scouting, spray, and animal daily, health and performance records
 
 Supported offline form entries sync when signal returns; file uploads require a connection. Attachments use private local disk, not object storage. Crop-plan cost lines for harvest, packaging and transport are entered per yield unit; other cost lines are total costs. Saving an expected plan initializes low-price (30% lower price) and low-yield (40% lower yield) scenarios when they do not already exist. All plan assumptions are placeholders until the farm verifies them. SMS/WhatsApp, weather feeds, investor agreements, in-app signing and subscription billing are future work. Generated legal templates are not available for signing in the app.
 

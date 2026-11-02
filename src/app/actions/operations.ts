@@ -1,6 +1,6 @@
 "use server";
 
-import { AnimalDailyRecordType, AnimalEventType, AnimalTrackingMode, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { AnimalDailyRecordType, AnimalEventType, AnimalHealthProductType, AnimalHealthRecordType, AnimalPerformanceType, AnimalTrackingMode, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
@@ -2655,4 +2655,530 @@ export async function recordAnimalDailyAction(
   }
   revalidatePath("/");
   return { message: "Animal daily record saved.", success: true };
+}
+
+export async function createAnimalHealthProductAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage vaccine and medicine records.");
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(120),
+    type: z.nativeEnum(AnimalHealthProductType),
+    diseaseCovered: optionalText,
+    dose: optionalText,
+    route: optionalText,
+    storage: optionalText,
+    batch: optionalText,
+    expiresAt: z.string().optional(),
+    costPerDose: optionalNumber,
+    withdrawalDays: z.coerce.number().int().min(0).max(3650),
+  }).safeParse({
+    name: value(formData, "name"),
+    type: value(formData, "type"),
+    diseaseCovered: value(formData, "diseaseCovered"),
+    dose: value(formData, "dose"),
+    route: value(formData, "route"),
+    storage: value(formData, "storage"),
+    batch: value(formData, "batch"),
+    expiresAt: value(formData, "expiresAt"),
+    costPerDose: value(formData, "costPerDose"),
+    withdrawalDays: value(formData, "withdrawalDays"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.expiresAt ?? "") ||
+    (parsed.data.costPerDose !== undefined && parsed.data.costPerDose < 0)
+  ) {
+    return invalid("Enter valid vaccine or medicine details, expiry date, cost, and withdrawal days.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalHealthProduct.create({
+      data: {
+        farmId: context.farm.id,
+        name: parsed.data.name,
+        type: parsed.data.type,
+        diseaseCovered: parsed.data.diseaseCovered,
+        dose: parsed.data.dose,
+        route: parsed.data.route,
+        storage: parsed.data.storage,
+        batch: parsed.data.batch,
+        expiresAt: optionalDate(parsed.data.expiresAt ?? ""),
+        costPerDose: parsed.data.costPerDose,
+        withdrawalDays: parsed.data.withdrawalDays,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Vaccine or medicine record added.", success: true };
+}
+
+export async function createAnimalVaccinationScheduleAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage vaccination schedules.");
+  const parsed = z.object({
+    title: z.string().trim().min(2).max(120),
+    productId: z.string().min(1),
+    species: z.string().trim().min(2).max(80),
+    breed: optionalText,
+    animalGroupId: optionalText,
+    ageDays: optionalNumber,
+    firstDueAt: z.string().optional(),
+    repeatEveryDays: optionalNumber,
+    notes: optionalText,
+  }).safeParse({
+    title: value(formData, "title"),
+    productId: value(formData, "productId"),
+    species: value(formData, "species"),
+    breed: value(formData, "breed"),
+    animalGroupId: value(formData, "animalGroupId"),
+    ageDays: value(formData, "ageDays"),
+    firstDueAt: value(formData, "firstDueAt"),
+    repeatEveryDays: value(formData, "repeatEveryDays"),
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    (parsed.data.ageDays !== undefined &&
+      (!Number.isInteger(parsed.data.ageDays) || parsed.data.ageDays < 0 || parsed.data.ageDays > 36500)) ||
+    (parsed.data.repeatEveryDays !== undefined &&
+      (!Number.isInteger(parsed.data.repeatEveryDays) || parsed.data.repeatEveryDays <= 0 || parsed.data.repeatEveryDays > 36500)) ||
+    dateError(parsed.data.firstDueAt ?? "") ||
+    (parsed.data.ageDays === undefined && !parsed.data.firstDueAt) ||
+    (Boolean(parsed.data.animalGroupId) && !parsed.data.firstDueAt)
+  ) {
+    return invalid("Enter a schedule title, species, first due date or age, and a valid repeat interval.");
+  }
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const [product, group] = await Promise.all([
+    farmDb.animalHealthProduct.findFirst({
+      where: { id: parsed.data.productId, farmId: context.farm.id, archivedAt: null },
+      select: { id: true, type: true },
+    }),
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true, species: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (!product || product.type !== AnimalHealthProductType.VACCINE) {
+    return invalid("Choose an active vaccine product from this farm.");
+  }
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  if (group && group.species.toLocaleLowerCase() !== parsed.data.species.toLocaleLowerCase()) {
+    return invalid("The schedule species must match its selected group.");
+  }
+  try {
+    await farmDb.animalVaccinationSchedule.create({
+      data: {
+        farmId: context.farm.id,
+        productId: product.id,
+        title: parsed.data.title,
+        species: parsed.data.species,
+        breed: parsed.data.breed,
+        animalGroupId: group?.id ?? null,
+        ageDays: parsed.data.ageDays,
+        firstDueAt: optionalDate(parsed.data.firstDueAt ?? ""),
+        repeatEveryDays: parsed.data.repeatEveryDays,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Vaccination schedule saved.", success: true };
+}
+
+export async function recordAnimalHealthAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    healthCaseId: optionalText,
+    productId: optionalText,
+    scheduleId: optionalText,
+    type: z.nativeEnum(AnimalHealthRecordType),
+    administeredAt: z.string().optional(),
+    dose: optionalText,
+    route: optionalText,
+    batch: optionalText,
+    cost: optionalNumber,
+    notes: optionalText,
+    offlineId: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    healthCaseId: value(formData, "healthCaseId"),
+    productId: value(formData, "productId"),
+    scheduleId: value(formData, "scheduleId"),
+    type: value(formData, "type"),
+    administeredAt: value(formData, "administeredAt"),
+    dose: value(formData, "dose"),
+    route: value(formData, "route"),
+    batch: value(formData, "batch"),
+    cost: value(formData, "cost"),
+    notes: value(formData, "notes"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (
+    !parsed.success ||
+    Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
+    dateError(parsed.data.administeredAt ?? "") ||
+    (parsed.data.cost !== undefined && parsed.data.cost < 0) ||
+    (parsed.data.type === AnimalHealthRecordType.VACCINATION && !parsed.data.productId) ||
+    (context.role !== FarmRole.OWNER && parsed.data.cost !== undefined)
+  ) {
+    return invalid("Choose one animal or group, a health activity and date; check any cost entered.");
+  }
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  if (parsed.data.offlineId && await farmDb.animalHealthRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Animal health record already synced.", success: true };
+  const administeredAt = optionalDate(parsed.data.administeredAt ?? "") ?? new Date();
+  if (administeredAt.getTime() > Date.now()) return invalid("Health record date must not be in the future.");
+  const [animal, group, healthCase, product, schedule] = await Promise.all([
+    parsed.data.animalId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+          select: { id: true, species: true, breed: true, groupId: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true, species: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.healthCaseId
+      ? farmDb.animalHealthCase.findFirst({
+          where: {
+            id: parsed.data.healthCaseId,
+            farmId: context.farm.id,
+            resolvedAt: null,
+            animalId: parsed.data.animalId || undefined,
+            animalGroupId: parsed.data.animalGroupId || undefined,
+          },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.productId
+      ? farmDb.animalHealthProduct.findFirst({
+          where: { id: parsed.data.productId, farmId: context.farm.id, archivedAt: null },
+          select: {
+            id: true,
+            type: true,
+            dose: true,
+            route: true,
+            batch: true,
+            expiresAt: true,
+            costPerDose: true,
+            withdrawalDays: true,
+          },
+        })
+      : Promise.resolve(null),
+    parsed.data.scheduleId
+      ? farmDb.animalVaccinationSchedule.findFirst({
+          where: { id: parsed.data.scheduleId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true, productId: true, species: true, breed: true, animalGroupId: true, firstDueAt: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (parsed.data.animalId && !animal) return invalid("Choose an active tagged animal from this farm.");
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  if (parsed.data.healthCaseId && !healthCase) return invalid("Choose an open health case for the same animal or group.");
+  if (parsed.data.productId && !product) return invalid("Choose an active vaccine or medicine from this farm.");
+  if (parsed.data.scheduleId && !schedule) return invalid("Choose an active vaccination schedule from this farm.");
+  if (product && product.expiresAt && product.expiresAt.getTime() < administeredAt.getTime()) {
+    return invalid("This vaccine or medicine batch was expired on the recorded administration date.");
+  }
+  if (schedule) {
+    const species = animal?.species ?? group?.species;
+    if (
+      parsed.data.type !== AnimalHealthRecordType.VACCINATION ||
+      schedule.productId !== product?.id ||
+      schedule.animalGroupId && schedule.animalGroupId !== group?.id ||
+      species?.toLocaleLowerCase() !== schedule.species.toLocaleLowerCase() ||
+      schedule.breed && schedule.breed.toLocaleLowerCase() !== animal?.breed?.toLocaleLowerCase() ||
+      group && !schedule.firstDueAt
+    ) {
+      return invalid("The selected vaccination schedule does not match this record.");
+    }
+  }
+  if (
+    parsed.data.type === AnimalHealthRecordType.VACCINATION &&
+    product?.type !== AnimalHealthProductType.VACCINE
+  ) return invalid("Vaccination records require a vaccine product.");
+
+  const withdrawalDays = product?.withdrawalDays ?? 0;
+  const withdrawalUntil = withdrawalDays > 0
+    ? new Date(administeredAt.getTime() + withdrawalDays * 86_400_000)
+    : null;
+  try {
+    const created = await farmDb.$transaction(async (tx) => {
+      if (parsed.data.offlineId && await tx.animalHealthRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })) return false;
+      await tx.animalHealthRecord.create({
+        data: {
+          farmId: context.farm.id,
+          animalId: animal?.id ?? null,
+          animalGroupId: group?.id ?? null,
+          healthCaseId: healthCase?.id ?? null,
+          productId: product?.id ?? null,
+          scheduleId: schedule?.id ?? null,
+          type: parsed.data.type,
+          administeredAt,
+          dose: parsed.data.dose ?? product?.dose,
+          route: parsed.data.route ?? product?.route,
+          batch: parsed.data.batch ?? product?.batch,
+          cost: parsed.data.cost ?? product?.costPerDose,
+          withdrawalDays,
+          withdrawalUntil,
+          notes: parsed.data.notes,
+          offlineId: parsed.data.offlineId ?? null,
+        },
+      });
+      return true;
+    });
+    if (!created) return { message: "Animal health record already synced.", success: true };
+  } catch (error) {
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalHealthRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) return { message: "Animal health record already synced.", success: true };
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal health record saved.", success: true };
+}
+
+export async function recordAnimalHealthCaseAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    symptoms: z.string().trim().min(2).max(2000),
+    diagnosis: z.preprocess(
+      (input) => (typeof input === "string" && input.trim() === "" ? undefined : input),
+      z.string().trim().max(2000).optional(),
+    ),
+    diagnosedBy: optionalText,
+    outcome: z.preprocess(
+      (input) => (typeof input === "string" && input.trim() === "" ? undefined : input),
+      z.string().trim().max(2000).optional(),
+    ),
+    openedAt: z.string().optional(),
+    offlineId: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    symptoms: value(formData, "symptoms"),
+    diagnosis: value(formData, "diagnosis"),
+    diagnosedBy: value(formData, "diagnosedBy"),
+    outcome: value(formData, "outcome"),
+    openedAt: value(formData, "openedAt"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (
+    !parsed.success ||
+    Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
+    dateError(parsed.data.openedAt ?? "")
+  ) return invalid("Choose one animal or group and enter symptoms and a valid date.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  if (parsed.data.offlineId && await farmDb.animalHealthCase.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Animal health case already synced.", success: true };
+  const [animal, group] = await Promise.all([
+    parsed.data.animalId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (parsed.data.animalId && !animal) return invalid("Choose an active tagged animal from this farm.");
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  const openedAt = optionalDate(parsed.data.openedAt ?? "") ?? new Date();
+  if (openedAt.getTime() > Date.now()) return invalid("Health case date must not be in the future.");
+  try {
+    await farmDb.animalHealthCase.create({
+      data: {
+        farmId: context.farm.id,
+        animalId: animal?.id ?? null,
+        animalGroupId: group?.id ?? null,
+        symptoms: parsed.data.symptoms,
+        diagnosis: parsed.data.diagnosis,
+        diagnosedBy: parsed.data.diagnosedBy,
+        outcome: parsed.data.outcome,
+        openedAt,
+        offlineId: parsed.data.offlineId ?? null,
+      },
+    });
+    revalidatePath("/");
+    return { message: "Animal health case recorded.", success: true };
+  } catch (error) {
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalHealthCase.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) return { message: "Animal health case already synced.", success: true };
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+}
+
+export async function resolveAnimalHealthCaseAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const id = value(formData, "id");
+  if (!id) return invalid("Choose a health case to resolve.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const healthCase = await farmDb.animalHealthCase.findFirst({
+    where: { id, farmId: context.farm.id, resolvedAt: null },
+    select: { id: true },
+  });
+  if (!healthCase) return invalid("That open health case was not found in this farm.");
+  try {
+    await farmDb.animalHealthCase.update({
+      where: { id: healthCase.id },
+      data: { resolvedAt: new Date() },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Animal health case resolved.", success: true };
+}
+
+export async function recordAnimalPerformanceAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: optionalText,
+    animalGroupId: optionalText,
+    type: z.nativeEnum(AnimalPerformanceType),
+    quantity: positiveNumber,
+    unit: z.string().trim().min(1).max(20),
+    recordedAt: z.string().optional(),
+    notes: optionalText,
+    offlineId: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    animalGroupId: value(formData, "animalGroupId"),
+    type: value(formData, "type"),
+    quantity: value(formData, "quantity"),
+    unit: value(formData, "unit"),
+    recordedAt: value(formData, "recordedAt"),
+    notes: value(formData, "notes"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (
+    !parsed.success ||
+    Boolean(parsed.data.animalId) === Boolean(parsed.data.animalGroupId) ||
+    dateError(parsed.data.recordedAt ?? "")
+  ) return invalid("Choose one animal or group and enter a positive measurement, unit, and date.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  if (parsed.data.offlineId && await farmDb.animalPerformanceRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Animal performance record already synced.", success: true };
+  const [animal, group] = await Promise.all([
+    parsed.data.animalId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.animalGroupId
+      ? farmDb.animalGroup.findFirst({
+          where: { id: parsed.data.animalGroupId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (parsed.data.animalId && !animal) return invalid("Choose an active tagged animal from this farm.");
+  if (parsed.data.animalGroupId && !group) return invalid("Choose an active animal group from this farm.");
+  const recordedAt = optionalDate(parsed.data.recordedAt ?? "") ?? new Date();
+  if (recordedAt.getTime() > Date.now()) return invalid("Performance record date must not be in the future.");
+  try {
+    await farmDb.animalPerformanceRecord.create({
+      data: {
+        farmId: context.farm.id,
+        animalId: animal?.id ?? null,
+        animalGroupId: group?.id ?? null,
+        type: parsed.data.type,
+        quantity: parsed.data.quantity,
+        unit: parsed.data.unit,
+        recordedAt,
+        notes: parsed.data.notes,
+        offlineId: parsed.data.offlineId ?? null,
+      },
+    });
+    revalidatePath("/");
+    return { message: "Animal performance record saved.", success: true };
+  } catch (error) {
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalPerformanceRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) return { message: "Animal performance record already synced.", success: true };
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
 }

@@ -48,6 +48,11 @@ const tenantModels = new Set([
   "AnimalEvent",
   "AnimalDailyRecord",
   "FeedRation",
+  "AnimalHealthProduct",
+  "AnimalVaccinationSchedule",
+  "AnimalHealthCase",
+  "AnimalHealthRecord",
+  "AnimalPerformanceRecord",
 ]);
 
 const readOperations = new Set([
