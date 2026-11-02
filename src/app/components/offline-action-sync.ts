@@ -8,6 +8,8 @@ import {
   recordAnimalHealthAction,
   recordAnimalHealthCaseAction,
   recordAnimalPerformanceAction,
+  recordAnimalBreedingAction,
+  recordAnimalTraitAction,
   recordScoutingAction,
   recordSprayAction,
   recordWeatherAction,
@@ -28,6 +30,8 @@ const actions: Record<OfflineActionKey, (state: FormState, data: FormData) => Pr
   "animal-health-case": recordAnimalHealthCaseAction,
   "animal-health-record": recordAnimalHealthAction,
   "animal-performance-record": recordAnimalPerformanceAction,
+  "animal-trait-record": recordAnimalTraitAction,
+  "animal-breeding-record": recordAnimalBreedingAction,
 };
 
 async function submitPendingAction(item: PendingAction) {

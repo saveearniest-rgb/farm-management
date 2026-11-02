@@ -1,6 +1,6 @@
 "use server";
 
-import { AnimalDailyRecordType, AnimalEventType, AnimalHealthProductType, AnimalHealthRecordType, AnimalPerformanceType, AnimalTrackingMode, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { AnimalBirthOutcome, AnimalBreedingMethod, AnimalDailyRecordType, AnimalEventType, AnimalHealthProductType, AnimalHealthRecordType, AnimalPerformanceType, AnimalPregnancyResult, AnimalPurpose, AnimalTrackingMode, AnimalTraitType, AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, FigureLabel, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { tenantDb } from "@/lib/tenant-db";
 import { parseExpenseAllocations } from "@/lib/expense-allocations";
 import { calculateAnimalGroupCount } from "@/lib/animal-management";
+import { areCloseRelatives, calculateExpectedBirthDate } from "@/lib/animal-breeding";
 import { calculateStockBalance } from "@/lib/stock-balance";
 import type { FormState } from "@/lib/form-state";
 
@@ -2187,8 +2188,12 @@ export async function createAnimalAction(
     tagNumber: z.string().trim().min(1).max(80),
     species: z.string().trim().min(2).max(80),
     breed: optionalText,
+    breedId: optionalText,
     sex: optionalText,
     birthDate: z.string().optional(),
+    damId: optionalText,
+    sireId: optionalText,
+    breedingRecordId: optionalText,
     source: optionalText,
     purchasePrice: optionalNumber,
     seller: optionalText,
@@ -2197,8 +2202,12 @@ export async function createAnimalAction(
     tagNumber: value(formData, "tagNumber"),
     species: value(formData, "species"),
     breed: value(formData, "breed"),
+    breedId: value(formData, "breedId"),
     sex: value(formData, "sex"),
     birthDate: value(formData, "birthDate"),
+    damId: value(formData, "damId"),
+    sireId: value(formData, "sireId"),
+    breedingRecordId: value(formData, "breedingRecordId"),
     source: value(formData, "source"),
     purchasePrice: value(formData, "purchasePrice"),
     seller: value(formData, "seller"),
@@ -2216,25 +2225,97 @@ export async function createAnimalAction(
   if (birthDate && birthDate.getTime() > Date.now()) {
     return invalid("Birth date must not be in the future.");
   }
-  const group = await tenantDb(context.farm.id, context.user.id).animalGroup.findFirst({
-        where: { id: parsed.data.groupId, farmId: context.farm.id, archivedAt: null },
-        select: { id: true, species: true, trackingMode: true },
-      });
+  if (parsed.data.damId && parsed.data.damId === parsed.data.sireId) {
+    return invalid("Dam and sire must be different animals.");
+  }
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const [group, breed, breedingRecord] = await Promise.all([
+    farmDb.animalGroup.findFirst({
+      where: { id: parsed.data.groupId, farmId: context.farm.id, archivedAt: null },
+      select: { id: true, species: true, trackingMode: true },
+    }),
+    parsed.data.breedId
+      ? farmDb.animalBreed.findFirst({
+          where: { id: parsed.data.breedId, farmId: context.farm.id, archivedAt: null },
+          select: { id: true, name: true, species: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.breedingRecordId
+      ? farmDb.animalBreedingRecord.findFirst({
+          where: { id: parsed.data.breedingRecordId, farmId: context.farm.id },
+          select: {
+            id: true,
+            damId: true,
+            sireId: true,
+            dam: { select: { species: true } },
+            sire: { select: { species: true } },
+          },
+        })
+      : Promise.resolve(null),
+  ]);
   if (!group || group.trackingMode !== AnimalTrackingMode.INDIVIDUAL) {
     return invalid("Choose an active individual-tracking group from this farm.");
   }
   if (group.species.toLocaleLowerCase() !== parsed.data.species.toLocaleLowerCase()) {
     return invalid("The animal species must match its group.");
   }
+  if (parsed.data.breedId && !breed) return invalid("Choose a breed registered in this farm.");
+  if (breed && breed.species.toLocaleLowerCase() !== parsed.data.species.toLocaleLowerCase()) {
+    return invalid("The breed species must match the animal species.");
+  }
+  if (parsed.data.breedingRecordId && !breedingRecord) {
+    return invalid("Choose a breeding record from this farm.");
+  }
+  if (
+    breedingRecord &&
+    (parsed.data.damId && parsed.data.damId !== breedingRecord.damId ||
+      parsed.data.sireId && parsed.data.sireId !== breedingRecord.sireId)
+  ) return invalid("The selected parents must match the linked breeding record.");
+  const damId = breedingRecord?.damId ?? parsed.data.damId;
+  const sireId = breedingRecord?.sireId ?? parsed.data.sireId;
+  if (damId && damId === sireId) return invalid("Dam and sire must be different animals.");
+  const parents = damId || sireId
+    ? await farmDb.animal.findMany({
+        where: {
+          farmId: context.farm.id,
+          archivedAt: null,
+          id: { in: [damId, sireId].filter((id): id is string => Boolean(id)) },
+        },
+        select: { id: true, species: true, sex: true, birthDate: true },
+      })
+    : [];
+  const dam = parents.find((parent) => parent.id === damId);
+  const sire = parents.find((parent) => parent.id === sireId);
+  if (damId && !dam || sireId && !sire) {
+    return invalid("Choose parent animals from this farm.");
+  }
+  if (parents.some((parent) => parent.species.toLocaleLowerCase() !== parsed.data.species.toLocaleLowerCase())) {
+    return invalid("A parent animal must have the same species.");
+  }
+  const damSex = dam?.sex?.trim().toLocaleUpperCase();
+  const sireSex = sire?.sex?.trim().toLocaleUpperCase();
+  if (damSex && ["M", "MALE", "BUCK", "RAM", "BOAR", "BULL", "ROOSTER"].includes(damSex)) {
+    return invalid("The dam must be female when sex is recorded.");
+  }
+  if (sireSex && ["F", "FEMALE", "DOE", "EWE", "SOW", "COW", "HEN"].includes(sireSex)) {
+    return invalid("The sire must be male when sex is recorded.");
+  }
+  if (birthDate && parents.some((parent) => parent.birthDate && parent.birthDate > birthDate)) {
+    return invalid("An animal cannot be born before its recorded parent.");
+  }
   try {
-    await tenantDb(context.farm.id, context.user.id).animal.create({
+    await farmDb.animal.create({
       data: {
         farmId: context.farm.id,
         tagNumber: parsed.data.tagNumber,
         species: parsed.data.species,
-        breed: parsed.data.breed,
+        breed: breed?.name ?? parsed.data.breed,
+        breedId: breed?.id ?? null,
         sex: parsed.data.sex,
         birthDate,
+        damId: dam?.id ?? null,
+        sireId: sire?.id ?? null,
+        breedingRecordId: breedingRecord?.id ?? null,
         source: parsed.data.source,
         purchasePrice: parsed.data.purchasePrice,
         seller: parsed.data.seller,
@@ -2354,6 +2435,9 @@ export async function recordAnimalEventAction(
     (parsed.data.seller && parsed.data.type !== AnimalEventType.PURCHASE)
   ) {
     return invalid("Choose one animal or group, event type, date and a positive whole quantity where needed.");
+  }
+  if (parsed.data.type === AnimalEventType.BREEDING) {
+    return invalid("Record breeding through the genetics and breeding form.");
   }
   const occurredAt = optionalDate(parsed.data.occurredAt ?? "") ?? new Date();
   if (occurredAt.getTime() > Date.now()) return invalid("Animal events must not be dated in the future.");
@@ -3258,4 +3342,482 @@ export async function recordAnimalPerformanceAction(
     if (databaseMessage) return invalid(databaseMessage);
     throw error;
   }
+}
+
+export async function saveAnimalSpeciesProfileAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage species reference values.");
+  const parsed = z.object({
+    species: z.string().trim().min(2).max(80),
+    gestationDays: optionalNumber,
+    sourceLabel: z.preprocess(
+      (input) => input === "" || input === null ? undefined : input,
+      z.nativeEnum(FigureLabel).optional(),
+    ),
+    sourceDate: z.string().optional(),
+    sourceNote: optionalText,
+  }).safeParse({
+    species: value(formData, "species"),
+    gestationDays: value(formData, "gestationDays"),
+    sourceLabel: value(formData, "sourceLabel"),
+    sourceDate: value(formData, "sourceDate"),
+    sourceNote: value(formData, "sourceNote"),
+  });
+  if (
+    !parsed.success ||
+    (parsed.data.gestationDays !== undefined &&
+      (!Number.isInteger(parsed.data.gestationDays) || parsed.data.gestationDays <= 0 || parsed.data.gestationDays > 1000)) ||
+    dateError(parsed.data.sourceDate ?? "") ||
+    (parsed.data.gestationDays !== undefined &&
+      (!parsed.data.sourceLabel || !parsed.data.sourceDate || !parsed.data.sourceNote))
+  ) return invalid("Enter valid species details. Gestation values require a source label, date and note.");
+  const sourceDate = parsed.data.gestationDays !== undefined
+    ? optionalDate(parsed.data.sourceDate ?? "")
+    : null;
+  if (sourceDate && sourceDate.getTime() > Date.now()) return invalid("Reference source date cannot be in the future.");
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalSpeciesProfile.upsert({
+      where: { farmId_species: { farmId: context.farm.id, species: parsed.data.species } },
+      create: {
+        farmId: context.farm.id,
+        species: parsed.data.species,
+        gestationDays: parsed.data.gestationDays ?? null,
+        sourceLabel: parsed.data.gestationDays === undefined ? null : parsed.data.sourceLabel!,
+        sourceDate,
+        sourceNote: parsed.data.gestationDays === undefined ? null : parsed.data.sourceNote!,
+      },
+      update: {
+        gestationDays: parsed.data.gestationDays ?? null,
+        sourceLabel: parsed.data.gestationDays === undefined ? null : parsed.data.sourceLabel!,
+        sourceDate,
+        sourceNote: parsed.data.gestationDays === undefined ? null : parsed.data.sourceNote!,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Species reference saved.", success: true };
+}
+
+export async function createAnimalBreedAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage breed references.");
+  const parsed = z.object({
+    species: z.string().trim().min(2).max(80),
+    name: z.string().trim().min(2).max(100),
+    purpose: z.nativeEnum(AnimalPurpose),
+  }).safeParse({
+    species: value(formData, "species"),
+    name: value(formData, "name"),
+    purpose: value(formData, "purpose"),
+  });
+  if (!parsed.success) return invalid("Enter a species, breed name and production purpose.");
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalBreed.create({
+      data: { farmId: context.farm.id, ...parsed.data },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return invalid("That breed is already registered for this species.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Breed reference saved.", success: true };
+}
+
+export async function createAnimalBreedBenchmarkAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage breed benchmarks.");
+  const parsed = z.object({
+    breedId: z.string().min(1),
+    traitName: z.string().trim().min(2).max(80),
+    value: z.string().trim().min(1).max(120),
+    unit: optionalText,
+    sourceLabel: z.nativeEnum(FigureLabel),
+    sourceDate: z.string().min(1),
+    sourceNote: z.string().trim().min(2).max(500),
+  }).safeParse({
+    breedId: value(formData, "breedId"),
+    traitName: value(formData, "traitName"),
+    value: value(formData, "value"),
+    unit: value(formData, "unit"),
+    sourceLabel: value(formData, "sourceLabel"),
+    sourceDate: value(formData, "sourceDate"),
+    sourceNote: value(formData, "sourceNote"),
+  });
+  if (!parsed.success || dateError(parsed.data.sourceDate)) {
+    return invalid("Enter a benchmark value with a source label, date and note.");
+  }
+  const sourceDate = optionalDate(parsed.data.sourceDate);
+  if (!sourceDate || sourceDate.getTime() > Date.now()) return invalid("Reference source date must be valid and not in the future.");
+  const breed = await tenantDb(context.farm.id, context.user.id).animalBreed.findFirst({
+    where: { id: parsed.data.breedId, farmId: context.farm.id, archivedAt: null },
+    select: { id: true },
+  });
+  if (!breed) return invalid("Choose a breed registered in this farm.");
+  try {
+    await tenantDb(context.farm.id, context.user.id).animalBreedBenchmark.create({
+      data: {
+        farmId: context.farm.id,
+        breedId: breed.id,
+        traitName: parsed.data.traitName,
+        value: parsed.data.value,
+        unit: parsed.data.unit,
+        sourceLabel: parsed.data.sourceLabel,
+        sourceDate,
+        sourceNote: parsed.data.sourceNote,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Breed benchmark saved with its source.", success: true };
+}
+
+export async function recordAnimalTraitAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    animalId: z.string().min(1),
+    type: z.nativeEnum(AnimalTraitType),
+    textValue: optionalText,
+    numericValue: optionalNumber,
+    unit: optionalText,
+    recordedAt: z.string().optional(),
+    notes: optionalText,
+    offlineId: optionalText,
+  }).safeParse({
+    animalId: value(formData, "animalId"),
+    type: value(formData, "type"),
+    textValue: value(formData, "textValue"),
+    numericValue: value(formData, "numericValue"),
+    unit: value(formData, "unit"),
+    recordedAt: value(formData, "recordedAt"),
+    notes: value(formData, "notes"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (!parsed.success || dateError(parsed.data.recordedAt ?? "")) {
+    return invalid("Choose an animal and enter valid trait details and date.");
+  }
+  const requiresNumeric = parsed.data.type === AnimalTraitType.BIRTH_WEIGHT ||
+    parsed.data.type === AnimalTraitType.CONFORMATION;
+  if (
+    requiresNumeric &&
+    (parsed.data.numericValue === undefined ||
+      parsed.data.numericValue < 0 ||
+      parsed.data.type === AnimalTraitType.BIRTH_WEIGHT && parsed.data.numericValue === 0)
+  ) {
+    return invalid("Enter a positive birth weight or a non-negative conformation score.");
+  }
+  if (parsed.data.type === AnimalTraitType.BIRTH_WEIGHT && !parsed.data.unit) {
+    return invalid("Enter the birth-weight unit.");
+  }
+  if (!requiresNumeric && !parsed.data.textValue) {
+    return invalid("Enter a value for this trait.");
+  }
+  if (parsed.data.offlineId && await tenantDb(context.farm.id, context.user.id).animalTraitRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Animal trait record already synced.", success: true };
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const animal = await farmDb.animal.findFirst({
+    where: { id: parsed.data.animalId, farmId: context.farm.id, archivedAt: null },
+    select: { id: true },
+  });
+  if (!animal) return invalid("Choose an active tagged animal from this farm.");
+  const recordedAt = optionalDate(parsed.data.recordedAt ?? "") ?? new Date();
+  if (recordedAt.getTime() > Date.now()) return invalid("Trait record date must not be in the future.");
+  try {
+    await farmDb.animalTraitRecord.create({
+      data: {
+        farmId: context.farm.id,
+        animalId: animal.id,
+        type: parsed.data.type,
+        textValue: requiresNumeric ? null : parsed.data.textValue,
+        numericValue: requiresNumeric ? parsed.data.numericValue : null,
+        unit: parsed.data.unit,
+        recordedAt,
+        notes: parsed.data.notes,
+        offlineId: parsed.data.offlineId ?? null,
+      },
+    });
+    revalidatePath("/");
+    return { message: "Animal trait recorded.", success: true };
+  } catch (error) {
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalTraitRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) return { message: "Animal trait record already synced.", success: true };
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+}
+
+export async function recordAnimalBreedingAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    damId: z.string().min(1),
+    sireId: optionalText,
+    semenBatch: optionalText,
+    method: z.nativeEnum(AnimalBreedingMethod),
+    servedAt: z.string().min(1),
+    notes: optionalText,
+    offlineId: optionalText,
+  }).safeParse({
+    damId: value(formData, "damId"),
+    sireId: value(formData, "sireId"),
+    semenBatch: value(formData, "semenBatch"),
+    method: value(formData, "method"),
+    servedAt: value(formData, "servedAt"),
+    notes: value(formData, "notes"),
+    offlineId: value(formData, "offlineId"),
+  });
+  if (!parsed.success || dateError(parsed.data.servedAt)) {
+    return invalid("Choose a dam, method and valid service date.");
+  }
+  if (
+    parsed.data.sireId === parsed.data.damId ||
+    parsed.data.method === AnimalBreedingMethod.NATURAL && !parsed.data.sireId ||
+    parsed.data.method === AnimalBreedingMethod.ARTIFICIAL_INSEMINATION &&
+      !parsed.data.sireId && !parsed.data.semenBatch
+  ) return invalid("Choose distinct parents, or enter a semen batch for artificial insemination.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  if (parsed.data.offlineId && await farmDb.animalBreedingRecord.findFirst({
+    where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+    select: { id: true },
+  })) return { message: "Breeding record already synced.", success: true };
+  const [dam, sire] = await Promise.all([
+    farmDb.animal.findFirst({
+      where: { id: parsed.data.damId, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+      select: { id: true, species: true, sex: true, birthDate: true, damId: true, sireId: true },
+    }),
+    parsed.data.sireId
+      ? farmDb.animal.findFirst({
+          where: { id: parsed.data.sireId, farmId: context.farm.id, archivedAt: null, status: "ACTIVE" },
+          select: { id: true, species: true, sex: true, birthDate: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (!dam) return invalid("Choose an active tagged dam from this farm.");
+  if (parsed.data.sireId && !sire) return invalid("Choose an active tagged sire from this farm.");
+  if (sire && sire.species.toLocaleLowerCase() !== dam.species.toLocaleLowerCase()) {
+    return invalid("Dam and sire must be the same species.");
+  }
+  const damSex = dam.sex?.trim().toLocaleUpperCase();
+  const sireSex = sire?.sex?.trim().toLocaleUpperCase();
+  if (damSex && ["M", "MALE", "BUCK", "RAM", "BOAR", "BULL", "ROOSTER"].includes(damSex)) {
+    return invalid("The selected dam is recorded as male.");
+  }
+  if (sireSex && ["F", "FEMALE", "DOE", "EWE", "SOW", "COW", "HEN"].includes(sireSex)) {
+    return invalid("The selected sire is recorded as female.");
+  }
+  const servedAt = optionalDate(parsed.data.servedAt)!;
+  if (
+    dam.birthDate && dam.birthDate > servedAt ||
+    sire?.birthDate && sire.birthDate > servedAt
+  ) return invalid("The breeding date must be on or after each parent's recorded birth date.");
+  const [speciesProfile, lineage] = await Promise.all([
+    farmDb.animalSpeciesProfile.findFirst({
+      where: { farmId: context.farm.id, species: { equals: dam.species, mode: "insensitive" } },
+      select: { gestationDays: true },
+    }),
+    sire
+      ? farmDb.animal.findMany({
+          where: { farmId: context.farm.id },
+          select: { id: true, damId: true, sireId: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const related = Boolean(sire && areCloseRelatives(dam.id, sire.id, lineage));
+  const expectedBirthAt = calculateExpectedBirthDate(servedAt, speciesProfile?.gestationDays ?? null);
+  try {
+    await farmDb.$transaction(async (tx) => {
+      await tx.animalBreedingRecord.create({
+        data: {
+          farmId: context.farm.id,
+          damId: dam.id,
+          sireId: sire?.id ?? null,
+          semenBatch: parsed.data.semenBatch,
+          method: parsed.data.method,
+          servedAt,
+          expectedBirthAt,
+          notes: parsed.data.notes,
+          offlineId: parsed.data.offlineId ?? null,
+        },
+      });
+      const eventNotes = [
+        `Method: ${parsed.data.method.toLocaleLowerCase().replaceAll("_", " ")}`,
+        parsed.data.semenBatch ? `Semen batch: ${parsed.data.semenBatch}` : null,
+        parsed.data.notes,
+      ].filter(Boolean).join(" · ");
+      await tx.animalEvent.create({
+        data: {
+          farmId: context.farm.id,
+          animalId: dam.id,
+          type: AnimalEventType.BREEDING,
+          occurredAt: servedAt,
+          notes: eventNotes,
+        },
+      });
+      if (sire) {
+        await tx.animalEvent.create({
+          data: {
+            farmId: context.farm.id,
+            animalId: sire.id,
+            type: AnimalEventType.BREEDING,
+            occurredAt: servedAt,
+            notes: eventNotes,
+          },
+        });
+      }
+    });
+    revalidatePath("/");
+    return {
+      message: related
+        ? "Breeding record saved. Warning: the recorded pedigree shows a close-relative mating; review it with your livestock professional."
+        : "Breeding record saved.",
+      success: true,
+    };
+  } catch (error) {
+    if (
+      parsed.data.offlineId &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      await farmDb.animalBreedingRecord.findFirst({
+        where: { farmId: context.farm.id, offlineId: parsed.data.offlineId },
+        select: { id: true },
+      })
+    ) return { message: "Breeding record already synced.", success: true };
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+}
+
+export async function updateAnimalBreedingProgressAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    id: z.string().min(1),
+    pregnancyCheckedAt: z.string().optional(),
+    pregnancyResult: z.preprocess(
+      (input) => input === "" || input === null ? undefined : input,
+      z.nativeEnum(AnimalPregnancyResult).optional(),
+    ),
+    birthAt: z.string().optional(),
+    birthOutcome: z.preprocess(
+      (input) => input === "" || input === null ? undefined : input,
+      z.nativeEnum(AnimalBirthOutcome).optional(),
+    ),
+  }).safeParse({
+    id: value(formData, "id"),
+    pregnancyCheckedAt: value(formData, "pregnancyCheckedAt"),
+    pregnancyResult: value(formData, "pregnancyResult"),
+    birthAt: value(formData, "birthAt"),
+    birthOutcome: value(formData, "birthOutcome"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.pregnancyCheckedAt ?? "") ||
+    dateError(parsed.data.birthAt ?? "") ||
+    Boolean(parsed.data.pregnancyCheckedAt) !== Boolean(parsed.data.pregnancyResult) ||
+    Boolean(parsed.data.birthAt) !== Boolean(parsed.data.birthOutcome) ||
+    !parsed.data.pregnancyCheckedAt && !parsed.data.birthAt
+  ) return invalid("Enter both a date and result for each pregnancy check or birth outcome.");
+  const farmDb = tenantDb(context.farm.id, context.user.id);
+  const breeding = await farmDb.animalBreedingRecord.findFirst({
+    where: { id: parsed.data.id, farmId: context.farm.id },
+    select: { id: true, servedAt: true, pregnancyResult: true, birthAt: true },
+  });
+  if (!breeding) return invalid("That breeding record was not found in this farm.");
+  const pregnancyCheckedAt = parsed.data.pregnancyCheckedAt
+    ? optionalDate(parsed.data.pregnancyCheckedAt)
+    : null;
+  const birthAt = parsed.data.birthAt ? optionalDate(parsed.data.birthAt) : null;
+  const now = Date.now();
+  if (
+    pregnancyCheckedAt && (pregnancyCheckedAt < breeding.servedAt || pregnancyCheckedAt.getTime() > now) ||
+    birthAt && (birthAt < breeding.servedAt || birthAt.getTime() > now)
+  ) return invalid("Pregnancy checks and birth dates must be after service and cannot be in the future.");
+  if (
+    (parsed.data.birthAt || breeding.birthAt) &&
+    (parsed.data.pregnancyResult === AnimalPregnancyResult.NEGATIVE ||
+      breeding.pregnancyResult === AnimalPregnancyResult.NEGATIVE)
+  ) return invalid("A birth outcome cannot be recorded for a breeding marked not pregnant.");
+  if (breeding.birthAt && parsed.data.birthAt) {
+    return invalid("A birth outcome is already recorded for this breeding.");
+  }
+  try {
+    await farmDb.$transaction(async (tx) => {
+      const current = await tx.animalBreedingRecord.findFirst({
+        where: { id: breeding.id, farmId: context.farm.id },
+        select: { birthAt: true, damId: true },
+      });
+      if (!current) throw new Error("BREEDING_RECORD_NOT_FOUND");
+      await tx.animalBreedingRecord.update({
+        where: { id: breeding.id },
+        data: {
+          ...(pregnancyCheckedAt ? { pregnancyCheckedAt, pregnancyResult: parsed.data.pregnancyResult } : {}),
+          ...(birthAt ? { birthAt, birthOutcome: parsed.data.birthOutcome } : {}),
+        },
+      });
+      if (!current.birthAt && birthAt) {
+        await tx.animalEvent.create({
+          data: {
+            farmId: context.farm.id,
+            animalId: current.damId,
+            type: AnimalEventType.BIRTH,
+            occurredAt: birthAt,
+            notes: `Breeding record ${breeding.id}: ${parsed.data.birthOutcome?.toLocaleLowerCase() ?? "birth recorded"}`,
+          },
+        });
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "BREEDING_RECORD_NOT_FOUND") {
+      return invalid("That breeding record was not found in this farm.");
+    }
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Breeding progress saved.", success: true };
 }

@@ -53,6 +53,11 @@ const tenantModels = new Set([
   "AnimalHealthCase",
   "AnimalHealthRecord",
   "AnimalPerformanceRecord",
+  "AnimalSpeciesProfile",
+  "AnimalBreed",
+  "AnimalBreedBenchmark",
+  "AnimalTraitRecord",
+  "AnimalBreedingRecord",
 ]);
 
 const readOperations = new Set([

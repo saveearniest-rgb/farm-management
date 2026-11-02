@@ -89,7 +89,17 @@ The Crop cycles section includes farm-owned disease and pesticide reference entr
 4. Review open cases, active withdrawal periods, and milk/egg records collected inside a withdrawal period. Sales warnings will be connected when livestock sales are implemented.
 5. Record individual or group weights, milk and eggs. The app calculates daily weight gain only when comparable individual weights use one consistent unit. Birth and weaning continue to be recorded as animal events.
 
-Animal reference assumptions and veterinary schedules are not preloaded. Confirm health, vaccination, feed and legal guidance with the farm's livestock professional or relevant local authority. Shamba records information and flags dates; it does not diagnose, prescribe, or replace a vet. Animal A3 (breeding, income, capital investment and planning) is not included yet.
+Animal reference assumptions and veterinary schedules are not preloaded. Confirm health, vaccination, feed and legal guidance with the farm's livestock professional or relevant local authority. Shamba records information and flags dates; it does not diagnose, prescribe, or replace a vet.
+
+### Animal farming A3: genetics and breeding
+
+1. Register species gestation days only when the farm has a source to record; enter the source label, date and note. No gestation values are preloaded.
+2. Register breeds and their production purpose. Add benchmark traits only with a source label, date and note; benchmarks are displayed as references, not promises.
+3. Link a tagged animal to a registered breed and, when known, its dam and sire. When the offspring came from a recorded mating, link that breeding record too. Record birth weight, colour, horn status, temperament or conformation observations; trait entries can queue offline.
+4. Record natural service or artificial insemination against a tagged dam. A sire or semen batch is required; any expected birth date uses only the farm-entered species gestation period.
+5. Add pregnancy-check and birth outcomes to the breeding record. The system warns when known pedigrees show close relatives; consult a livestock professional when reviewing breeding decisions.
+
+This first A3 increment covers breed/species references, pedigree, traits and breeding records. Product-line income, capital investment tracking, and the animal dashboard/planning view are still pending. Shamba records information and does not provide genetics, veterinary or breeding recommendations.
 
 Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on local disk. The encryption key is derived from `AUTH_SECRET`, so keep that secret stable and configure persistent storage; see [docs/operations.md](./docs/operations.md).
 
@@ -118,6 +128,7 @@ Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on loc
 - Worker records, hours, recent pay summary, split expenses, an asset register with usage and maintenance costs, and basic stock and suppliers/lots
 - Animal farming A1: tagged animal and group registers, event timelines with calculated group counts, daily animal records, farm-entered feed rations, feed planning against the shared stock ledger, and expense allocations to animals or groups
 - Animal farming A2: farm-managed vaccine/medicine batches and vaccination schedules, health cases and treatment records, atomic veterinary stock deductions with cost from recorded purchases, withdrawal-period and collection warnings, and offline-capable weight, milk and egg records
+- Animal farming A3 (first increment): farm-sourced breed and gestation references, pedigree links, offline trait and breeding records, projected birth dates from configured gestation periods, pregnancy/birth outcomes, and close-relative warnings
 - Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
 - Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export

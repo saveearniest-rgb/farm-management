@@ -20,6 +20,12 @@ let farmBHealthProductId = "";
 let farmBHealthRecordId = "";
 let farmBHealthStockMovementId = "";
 let farmBPerformanceRecordId = "";
+let farmBBreedId = "";
+let farmBSpeciesProfileId = "";
+let farmBBreedBenchmarkId = "";
+let farmBTraitRecordId = "";
+let farmBBreedingRecordId = "";
+let farmBOffspringId = "";
 
 describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
   beforeAll(async () => {
@@ -99,6 +105,85 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       select: { id: true },
     });
     farmBAnimalId = animalB.id;
+    const sireB = await tenantDb(farmB.id, userB.id).animal.create({
+      data: {
+        farmId: farmB.id,
+        tagNumber: `sire-${suffix}`,
+        species: "test species",
+        sex: "MALE",
+        groupId: groupB.id,
+      },
+      select: { id: true },
+    });
+    const speciesProfileB = await tenantDb(farmB.id, userB.id).animalSpeciesProfile.create({
+      data: {
+        farmId: farmB.id,
+        species: "test species",
+        gestationDays: 150,
+        sourceLabel: "BENCHMARK",
+        sourceDate: new Date("2026-01-01T12:00:00Z"),
+        sourceNote: "Test-only sourced reference.",
+      },
+      select: { id: true },
+    });
+    farmBSpeciesProfileId = speciesProfileB.id;
+    const breedB = await tenantDb(farmB.id, userB.id).animalBreed.create({
+      data: {
+        farmId: farmB.id,
+        species: "test species",
+        name: `Test breed ${suffix}`,
+        purpose: "DUAL",
+      },
+      select: { id: true },
+    });
+    farmBBreedId = breedB.id;
+    const benchmarkB = await tenantDb(farmB.id, userB.id).animalBreedBenchmark.create({
+      data: {
+        farmId: farmB.id,
+        breedId: breedB.id,
+        traitName: "test trait",
+        value: "placeholder",
+        sourceLabel: "PLACEHOLDER_BENCHMARK",
+        sourceDate: new Date("2026-01-01T12:00:00Z"),
+        sourceNote: "Test-only placeholder.",
+      },
+      select: { id: true },
+    });
+    farmBBreedBenchmarkId = benchmarkB.id;
+    const traitB = await tenantDb(farmB.id, userB.id).animalTraitRecord.create({
+      data: {
+        farmId: farmB.id,
+        animalId: animalB.id,
+        type: "COLOR",
+        textValue: "test color",
+      },
+      select: { id: true },
+    });
+    farmBTraitRecordId = traitB.id;
+    const breedingB = await tenantDb(farmB.id, userB.id).animalBreedingRecord.create({
+      data: {
+        farmId: farmB.id,
+        damId: animalB.id,
+        sireId: sireB.id,
+        method: "NATURAL",
+        servedAt: new Date("2026-01-01T12:00:00Z"),
+      },
+      select: { id: true },
+    });
+    farmBBreedingRecordId = breedingB.id;
+    const offspringB = await tenantDb(farmB.id, userB.id).animal.create({
+      data: {
+        farmId: farmB.id,
+        tagNumber: `offspring-${suffix}`,
+        species: "test species",
+        groupId: groupB.id,
+        damId: animalB.id,
+        sireId: sireB.id,
+        breedingRecordId: breedingB.id,
+      },
+      select: { id: true },
+    });
+    farmBOffspringId = offspringB.id;
     const medicineStockB = await tenantDb(farmB.id, userB.id).stockItem.create({
       data: {
         farmId: farmB.id,
@@ -213,6 +298,32 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
       where: { id: farmBPerformanceRecordId, farmId: farmBId },
       data: { quantity: 999 },
     });
+    const hiddenSpeciesProfile = await farmA.animalSpeciesProfile.findFirst({
+      where: { id: farmBSpeciesProfileId, farmId: farmBId },
+    });
+    const changedSpeciesProfiles = await farmA.animalSpeciesProfile.updateMany({
+      where: { id: farmBSpeciesProfileId, farmId: farmBId },
+      data: { gestationDays: 1 },
+    });
+    const hiddenBreed = await farmA.animalBreed.findFirst({
+      where: { id: farmBBreedId, farmId: farmBId },
+    });
+    const changedBreeds = await farmA.animalBreed.updateMany({
+      where: { id: farmBBreedId, farmId: farmBId },
+      data: { name: "cross-tenant overwrite" },
+    });
+    const hiddenBreedBenchmark = await farmA.animalBreedBenchmark.findFirst({
+      where: { id: farmBBreedBenchmarkId, farmId: farmBId },
+    });
+    const hiddenTraitRecord = await farmA.animalTraitRecord.findFirst({
+      where: { id: farmBTraitRecordId, farmId: farmBId },
+    });
+    const hiddenBreedingRecord = await farmA.animalBreedingRecord.findFirst({
+      where: { id: farmBBreedingRecordId, farmId: farmBId },
+    });
+    const hiddenOffspring = await farmA.animal.findFirst({
+      where: { id: farmBOffspringId, farmId: farmBId },
+    });
     const stampedHolding = await farmA.landHolding.create({
       data: {
         farmId: farmBId,
@@ -234,6 +345,14 @@ describe.skipIf(!testDatabaseUrl)("farm tenant isolation", () => {
     expect(changedMedicineUsage.count).toBe(0);
     expect(hiddenPerformanceRecord).toBeNull();
     expect(changedPerformanceRecords.count).toBe(0);
+    expect(hiddenSpeciesProfile).toBeNull();
+    expect(changedSpeciesProfiles.count).toBe(0);
+    expect(hiddenBreed).toBeNull();
+    expect(changedBreeds.count).toBe(0);
+    expect(hiddenBreedBenchmark).toBeNull();
+    expect(hiddenTraitRecord).toBeNull();
+    expect(hiddenBreedingRecord).toBeNull();
+    expect(hiddenOffspring).toBeNull();
     expect(stampedHolding.farmId).toBe(farmAId);
 
     const originalPlot = await db.plot.findUnique({

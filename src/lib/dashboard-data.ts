@@ -1,6 +1,7 @@
 import "server-only";
 
 import { tenantDb } from "@/lib/tenant-db";
+import { calculateExpectedBirthDate } from "@/lib/animal-breeding";
 
 type Context = NonNullable<Awaited<ReturnType<typeof import("@/lib/auth").getAppContext>>>;
 
@@ -49,6 +50,11 @@ export async function getDashboardData(context: Context) {
     rawAnimalHealthCases,
     rawAnimalHealthRecords,
     rawAnimalPerformanceRecords,
+    rawAnimalSpeciesProfiles,
+    rawAnimalBreeds,
+    rawAnimalLineage,
+    rawAnimalTraitRecords,
+    rawAnimalBreedingRecords,
   ] = await Promise.all([
     db.landHolding.findMany({
       where: { farmId, archivedAt: null },
@@ -323,7 +329,14 @@ export async function getDashboardData(context: Context) {
         seller: isOwner,
         status: true,
         groupId: true,
+        damId: true,
+        sireId: true,
+        breedingRecordId: true,
+        breedId: true,
         group: { select: { id: true, name: true } },
+        breedReference: { select: { name: true } },
+        dam: { select: { tagNumber: true } },
+        sire: { select: { tagNumber: true } },
         events: {
           orderBy: { occurredAt: "desc" },
           select: {
@@ -416,6 +429,34 @@ export async function getDashboardData(context: Context) {
       include: {
         animal: { select: { id: true, tagNumber: true } },
         animalGroup: { select: { id: true, name: true } },
+      },
+    }),
+    db.animalSpeciesProfile.findMany({
+      where: { farmId },
+      orderBy: { species: "asc" },
+    }),
+    db.animalBreed.findMany({
+      where: { farmId, archivedAt: null },
+      orderBy: [{ species: "asc" }, { name: "asc" }],
+      include: { benchmarks: { orderBy: [{ traitName: "asc" }, { createdAt: "desc" }] } },
+    }),
+    db.animal.findMany({
+      where: { farmId },
+      select: { id: true, damId: true, sireId: true },
+    }),
+    db.animalTraitRecord.findMany({
+      where: { farmId },
+      orderBy: { recordedAt: "desc" },
+      take: 200,
+      include: { animal: { select: { id: true, tagNumber: true } } },
+    }),
+    db.animalBreedingRecord.findMany({
+      where: { farmId },
+      orderBy: { servedAt: "desc" },
+      take: 200,
+      include: {
+        dam: { select: { id: true, tagNumber: true, species: true } },
+        sire: { select: { id: true, tagNumber: true } },
       },
     }),
   ]);
@@ -900,6 +941,13 @@ export async function getDashboardData(context: Context) {
       status: animal.status,
       groupId: animal.groupId,
       groupName: animal.group?.name ?? null,
+      breedId: animal.breedId,
+      breedName: animal.breedReference?.name ?? animal.breed,
+      damId: animal.damId,
+      damTag: animal.dam?.tagNumber ?? null,
+      sireId: animal.sireId,
+      sireTag: animal.sire?.tagNumber ?? null,
+      breedingRecordId: animal.breedingRecordId,
       events: animal.events.map((event) => ({
         id: event.id,
         type: event.type,
@@ -1005,6 +1053,63 @@ export async function getDashboardData(context: Context) {
       quantity: numeric(record.quantity) ?? 0,
       unit: record.unit,
       recordedAt: iso(record.recordedAt),
+      notes: record.notes,
+    })),
+    animalSpeciesProfiles: rawAnimalSpeciesProfiles.map((profile) => ({
+      id: profile.id,
+      species: profile.species,
+      gestationDays: profile.gestationDays,
+      sourceLabel: profile.sourceLabel,
+      sourceDate: iso(profile.sourceDate),
+      sourceNote: profile.sourceNote,
+    })),
+    animalBreeds: rawAnimalBreeds.map((breed) => ({
+      id: breed.id,
+      name: breed.name,
+      species: breed.species,
+      purpose: breed.purpose,
+      benchmarks: breed.benchmarks.map((benchmark) => ({
+        id: benchmark.id,
+        traitName: benchmark.traitName,
+        value: benchmark.value,
+        unit: benchmark.unit,
+        sourceLabel: benchmark.sourceLabel,
+        sourceDate: iso(benchmark.sourceDate),
+        sourceNote: benchmark.sourceNote,
+      })),
+    })),
+    animalLineage: rawAnimalLineage,
+    animalTraitRecords: rawAnimalTraitRecords.map((record) => ({
+      id: record.id,
+      animalId: record.animalId,
+      animalTag: record.animal.tagNumber,
+      type: record.type,
+      textValue: record.textValue,
+      numericValue: numeric(record.numericValue),
+      unit: record.unit,
+      recordedAt: iso(record.recordedAt),
+      notes: record.notes,
+    })),
+    animalBreedingRecords: rawAnimalBreedingRecords.map((record) => ({
+      id: record.id,
+      damId: record.damId,
+      damTag: record.dam.tagNumber,
+      species: record.dam.species,
+      sireId: record.sireId,
+      sireTag: record.sire?.tagNumber ?? null,
+      semenBatch: record.semenBatch,
+      method: record.method,
+      servedAt: iso(record.servedAt),
+      expectedBirthAt: iso(record.expectedBirthAt ?? calculateExpectedBirthDate(
+        record.servedAt,
+        rawAnimalSpeciesProfiles.find((profile) =>
+          profile.species.toLocaleLowerCase() === record.dam.species.toLocaleLowerCase(),
+        )?.gestationDays ?? null,
+      )),
+      pregnancyCheckedAt: iso(record.pregnancyCheckedAt),
+      pregnancyResult: record.pregnancyResult,
+      birthAt: iso(record.birthAt),
+      birthOutcome: record.birthOutcome,
       notes: record.notes,
     })),
   };

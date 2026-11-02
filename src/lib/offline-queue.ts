@@ -11,7 +11,9 @@ export type OfflineActionKey =
   | "animal-daily-record"
   | "animal-health-case"
   | "animal-health-record"
-  | "animal-performance-record";
+  | "animal-performance-record"
+  | "animal-trait-record"
+  | "animal-breeding-record";
 
 export type PendingAction = {
   id: string;

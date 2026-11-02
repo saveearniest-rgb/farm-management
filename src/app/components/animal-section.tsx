@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import {
   archiveAnimalAction,
   archiveAnimalGroupAction,
+  createAnimalBreedAction,
+  createAnimalBreedBenchmarkAction,
   createAnimalAction,
   createAnimalGroupAction,
   createAnimalHealthProductAction,
@@ -11,10 +13,14 @@ import {
   recordAnimalHealthAction,
   recordAnimalHealthCaseAction,
   recordAnimalDailyAction,
+  recordAnimalBreedingAction,
   recordAnimalEventAction,
   recordAnimalPerformanceAction,
+  recordAnimalTraitAction,
   resolveAnimalHealthCaseAction,
+  saveAnimalSpeciesProfileAction,
   saveFeedRationAction,
+  updateAnimalBreedingProgressAction,
 } from "@/app/actions/operations";
 import {
   calculateCurrentAnimalCount,
@@ -24,6 +30,7 @@ import {
   calculateAverageDailyWeightGain,
   isWithinWithdrawalPeriod,
 } from "@/lib/animal-health";
+import { areCloseRelatives } from "@/lib/animal-breeding";
 import type { DashboardData } from "@/lib/dashboard-data";
 import type { Locale } from "@/lib/i18n";
 import { ActionForm, FormField, FormSelect, FormTextArea } from "./action-form";
@@ -41,6 +48,12 @@ const eventTypes = [
 const dailyTypes = ["FEEDING", "WATER", "MILK", "EGGS", "HEALTH_CHECK", "OTHER"];
 const healthRecordTypes = ["VACCINATION", "TREATMENT", "DEWORMING", "DIPPING", "TICK_CONTROL", "VET_VISIT"];
 const performanceTypes = ["WEIGHT", "MILK", "EGGS"];
+const animalPurposes = ["MILK", "MEAT", "EGGS", "DUAL", "BREEDING", "OTHER"];
+const animalTraitTypes = ["BIRTH_WEIGHT", "COLOR", "HORN_STATUS", "TEMPERAMENT", "CONFORMATION", "OTHER"];
+const sourceLabels = ["BENCHMARK", "PLACEHOLDER_BENCHMARK", "LOCAL_QUOTE", "YOUR_ACTUAL"];
+const pregnancyResults = ["POSITIVE", "NEGATIVE", "INCONCLUSIVE"];
+const birthOutcomes = ["LIVE", "STILLBORN", "ABORTION", "UNKNOWN"];
+const breedingMethods = ["NATURAL", "ARTIFICIAL_INSEMINATION"];
 
 function eventLabel(type: string, locale: Locale) {
   const sw: Record<string, string> = {
@@ -48,6 +61,7 @@ function eventLabel(type: string, locale: Locale) {
     PURCHASE: "Ununuzi",
     WEANING: "Kuachisha kunyonya",
     MOVE: "Kuhamisha",
+    BREEDING: "Kupandisha",
     SALE: "Mauzo",
     DEATH: "Kifo",
     CULLED: "Kuondoa kundini",
@@ -66,6 +80,40 @@ function dailyLabel(type: string, locale: Locale) {
     OTHER: "Nyingine",
   };
   return locale === "sw" ? sw[type] ?? type : type.toLowerCase().replaceAll("_", " ");
+}
+
+function traitLabel(type: string, locale: Locale) {
+  const sw: Record<string, string> = {
+    BIRTH_WEIGHT: "Uzito wa kuzaliwa",
+    COLOR: "Rangi",
+    HORN_STATUS: "Hali ya pembe",
+    TEMPERAMENT: "Tabia",
+    CONFORMATION: "Muundo wa mwili",
+    OTHER: "Nyingine",
+  };
+  return locale === "sw" ? sw[type] ?? type : type.toLowerCase().replaceAll("_", " ");
+}
+
+function purposeLabel(purpose: string, locale: Locale) {
+  const sw: Record<string, string> = {
+    MILK: "Maziwa",
+    MEAT: "Nyama",
+    EGGS: "Mayai",
+    DUAL: "Madhumuni mawili",
+    BREEDING: "Uzalishaji",
+    OTHER: "Nyingine",
+  };
+  return locale === "sw" ? sw[purpose] ?? purpose : purpose.toLowerCase();
+}
+
+function sourceLabelText(sourceLabel: string, locale: Locale) {
+  const sw: Record<string, string> = {
+    BENCHMARK: "KIGEZO",
+    PLACEHOLDER_BENCHMARK: "KIGEZO CHA MUDA",
+    LOCAL_QUOTE: "TAARIFA YA ENEO",
+    YOUR_ACTUAL: "TAARIFA HALISI YA SHAMBA",
+  };
+  return locale === "sw" ? sw[sourceLabel] ?? sourceLabel : sourceLabel.replaceAll("_", " ");
 }
 
 export function AnimalSection({
@@ -323,6 +371,148 @@ export function AnimalSection({
       <section className="panel">
         <div className="panel-header">
           <div>
+            <h3>{sw ? "Jenetiki na uzalishaji" : "Genetics and breeding"}</h3>
+            <p>{sw
+              ? "Rekodi za ukoo, sifa na uzalishaji hujazwa na shamba. Tarehe ya kuzaliwa inayotarajiwa huonyeshwa tu baada ya kuweka muda wa ujauzito pamoja na chanzo."
+              : "Pedigree, traits and breeding records are farm-entered. An expected birth date appears only after the farm records a sourced gestation period."}</p>
+          </div>
+        </div>
+        {isOwner && (
+          <div className="form-grid">
+            <ActionForm action={saveAnimalSpeciesProfileAction} submitLabel={sw ? "Hifadhi taarifa za spishi" : "Save species reference"} className="form-grid field-wide">
+              <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
+              <FormField label={sw ? "Siku za ujauzito (si lazima)" : "Gestation days (optional)"} name="gestationDays" type="number" min="1" max="1000" step="1" required={false} />
+              <FormSelect label={sw ? "Lebo ya chanzo" : "Source label"} name="sourceLabel" required={false} options={sourceLabels.map((label) => ({ value: label, label: sourceLabelText(label, locale) }))} />
+              <FormField label={sw ? "Tarehe ya chanzo" : "Source date"} name="sourceDate" type="date" required={false} />
+              <FormField label={sw ? "Maelezo ya chanzo" : "Source note"} name="sourceNote" required={false} />
+            </ActionForm>
+            <ActionForm action={createAnimalBreedAction} submitLabel={sw ? "Sajili aina ya uzalishaji" : "Register breed"} className="form-grid field-wide">
+              <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
+              <FormField label={sw ? "Jina la uzazi" : "Breed name"} name="name" required />
+              <FormSelect label={sw ? "Madhumuni" : "Purpose"} name="purpose" options={animalPurposes.map((purpose) => ({
+                value: purpose,
+                label: purposeLabel(purpose, locale),
+              }))} />
+            </ActionForm>
+            {data.animalBreeds.length > 0 && (
+              <ActionForm action={createAnimalBreedBenchmarkAction} submitLabel={sw ? "Hifadhi kigezo chenye chanzo" : "Save sourced breed benchmark"} className="form-grid field-wide">
+                <FormSelect label={sw ? "Uzazi" : "Breed"} name="breedId" options={data.animalBreeds.map((breed) => ({ value: breed.id, label: `${breed.name} · ${breed.species}` }))} />
+                <FormField label={sw ? "Sifa/kigezo" : "Trait"} name="traitName" required />
+                <FormField label={sw ? "Thamani" : "Value"} name="value" required />
+                <FormField label={sw ? "Kipimo (hiari)" : "Unit (optional)"} name="unit" required={false} />
+                <FormSelect label={sw ? "Lebo ya chanzo" : "Source label"} name="sourceLabel" options={sourceLabels.map((label) => ({ value: label, label: sourceLabelText(label, locale) }))} />
+                <FormField label={sw ? "Tarehe ya chanzo" : "Source date"} name="sourceDate" type="date" required />
+                <FormField label={sw ? "Maelezo ya chanzo" : "Source note"} name="sourceNote" required />
+              </ActionForm>
+            )}
+          </div>
+        )}
+        {data.animalSpeciesProfiles.length > 0 && (
+          <div className="record-list">
+            {data.animalSpeciesProfiles.map((profile) => (
+              <p key={profile.id}><strong>{profile.species}</strong>
+                {profile.gestationDays === null
+                  ? ` · ${sw ? "hakuna muda wa ujauzito uliowekwa" : "no gestation period set"}`
+                  : ` · ${profile.gestationDays} ${sw ? "siku za ujauzito" : "gestation days"} · ${profile.sourceLabel ? sourceLabelText(profile.sourceLabel, locale) : ""} · ${date(profile.sourceDate)} · ${profile.sourceNote}`}
+              </p>
+            ))}
+          </div>
+        )}
+        {data.animalBreeds.length > 0 && (
+          <div className="table-scroll"><table><thead><tr>
+            <th>{sw ? "Aina / uzazi" : "Species / breed"}</th><th>{sw ? "Madhumuni" : "Purpose"}</th>
+            <th>{sw ? "Vigezo vya marejeo" : "Reference benchmarks"}</th>
+          </tr></thead><tbody>{data.animalBreeds.map((breed) => (
+            <tr key={breed.id}>
+              <td>{breed.species} · {breed.name}</td><td>{purposeLabel(breed.purpose, locale)}</td>
+              <td>{breed.benchmarks.length
+                ? breed.benchmarks.map((benchmark) =>
+                    `${benchmark.traitName}: ${benchmark.value}${benchmark.unit ? ` ${benchmark.unit}` : ""} (${sourceLabelText(benchmark.sourceLabel, locale)}, ${date(benchmark.sourceDate)} — ${benchmark.sourceNote})`,
+                  ).join(" · ")
+                : (sw ? "Hakuna vigezo vilivyowekwa" : "No benchmark values entered")}</td>
+            </tr>
+          ))}</tbody></table></div>
+        )}
+        <ActionForm
+          action={recordAnimalTraitAction}
+          submitLabel={sw ? "Rekodi sifa" : "Record animal trait"}
+          className="form-grid"
+          offlineActionKey="animal-trait-record"
+          workspaceId={data.farm.id}
+          locale={locale}
+        >
+          <FormSelect label={sw ? "Mnyama" : "Animal"} name="animalId" options={animalOptions} />
+          <FormSelect label={sw ? "Sifa" : "Trait"} name="type" options={animalTraitTypes.map((type) => ({ value: type, label: traitLabel(type, locale) }))} />
+          <FormField label={sw ? "Thamani ya maandishi (rangi, pembe, tabia)" : "Text value (colour, horn status, temperament)"} name="textValue" required={false} />
+          <FormField label={sw ? "Thamani ya namba (uzito wa kuzaliwa/alama)" : "Numeric value (birth weight/score)"} name="numericValue" type="number" min="0" step="any" required={false} />
+          <FormField label={sw ? "Kipimo" : "Unit"} name="unit" required={false} />
+          <FormField label={sw ? "Tarehe" : "Date"} name="recordedAt" type="date" />
+          <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
+        </ActionForm>
+        {data.animalTraitRecords.length > 0 && (
+          <div className="table-scroll"><table><thead><tr>
+            <th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Mnyama" : "Animal"}</th>
+            <th>{sw ? "Sifa" : "Trait"}</th><th>{sw ? "Thamani" : "Value"}</th><th>{sw ? "Maelezo" : "Notes"}</th>
+          </tr></thead><tbody>{data.animalTraitRecords.map((record) => (
+            <tr key={record.id}>
+              <td>{date(record.recordedAt)}</td><td>{record.animalTag}</td><td>{traitLabel(record.type, locale)}</td>
+              <td>{record.textValue ?? `${number(record.numericValue ?? 0)} ${record.unit ?? ""}`}</td><td>{record.notes ?? "—"}</td>
+            </tr>
+          ))}</tbody></table></div>
+        )}
+        <ActionForm
+          action={recordAnimalBreedingAction}
+          submitLabel={sw ? "Hifadhi tukio la uzalishaji" : "Save breeding record"}
+          className="form-grid"
+          offlineActionKey="animal-breeding-record"
+          workspaceId={data.farm.id}
+          locale={locale}
+        >
+          <FormSelect label={sw ? "Mama" : "Dam"} name="damId" options={animalOptions} />
+          <FormSelect label={sw ? "Baba (ikiwa anajulikana)" : "Sire (if known)"} name="sireId" required={false} options={animalOptions} />
+          <FormSelect label={sw ? "Njia" : "Method"} name="method" options={breedingMethods.map((method) => ({
+            value: method,
+            label: sw ? (method === "NATURAL" ? "Asili" : "Upandikizaji") : method === "NATURAL" ? "Natural" : "Artificial insemination",
+          }))} />
+          <FormField label={sw ? "Kundi la shahawa (ikiwa limetumika)" : "Semen batch (if used)"} name="semenBatch" required={false} />
+          <FormField label={sw ? "Tarehe ya kupandisha (inaweza kuwa ya baadaye kwa mpango)" : "Service date (future dates can be planned)"} name="servedAt" type="date" required />
+          <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
+        </ActionForm>
+        {data.animalBreedingRecords.length > 0 ? (
+          <div className="table-scroll"><table><thead><tr>
+            <th>{sw ? "Tarehe" : "Service date"}</th><th>{sw ? "Mama / baba" : "Dam / sire"}</th>
+            <th>{sw ? "Njia / shahawa" : "Method / semen batch"}</th><th>{sw ? "Kuzaliwa kunakotarajiwa" : "Expected birth"}</th>
+            <th>{sw ? "Ukaguzi / matokeo" : "Check / outcome"}</th><th>{sw ? "Maendeleo" : "Progress"}</th>
+          </tr></thead><tbody>{data.animalBreedingRecords.map((record) => {
+            const related = record.sireId ? areCloseRelatives(record.damId, record.sireId, data.animalLineage) : false;
+            return (
+              <tr key={record.id}>
+                <td>{date(record.servedAt)}</td><td>{record.damTag} / {record.sireTag ?? record.semenBatch ?? "—"}</td>
+                <td>{record.method.replaceAll("_", " ").toLowerCase()}</td>
+                <td>{record.expectedBirthAt ? date(record.expectedBirthAt) : (sw ? "Muda wa ujauzito haujawekwa" : "Gestation not configured")}</td>
+                <td>{[
+                  record.pregnancyResult ? `${record.pregnancyResult} · ${date(record.pregnancyCheckedAt)}` : null,
+                  record.birthOutcome ? `${record.birthOutcome} · ${date(record.birthAt)}` : null,
+                  related ? (sw ? "Tahadhari: ukoo wa karibu" : "Warning: close-relative mating") : null,
+                ].filter(Boolean).join(" · ") || "—"}</td>
+                <td>{!record.birthAt && (
+                  <ActionForm action={updateAnimalBreedingProgressAction} submitLabel={sw ? "Hifadhi maendeleo" : "Save progress"} className="animal-row-action">
+                    <input name="id" type="hidden" value={record.id} />
+                    <FormField label={sw ? "Tarehe ya ukaguzi wa ujauzito" : "Pregnancy check date"} name="pregnancyCheckedAt" type="date" defaultValue={record.pregnancyCheckedAt?.slice(0, 10)} required={false} />
+                    <FormSelect label={sw ? "Matokeo ya ukaguzi" : "Pregnancy result"} name="pregnancyResult" required={false} defaultValue={record.pregnancyResult ?? ""} options={pregnancyResults.map((result) => ({ value: result, label: result.toLowerCase() }))} />
+                    <FormField label={sw ? "Tarehe ya kuzaliwa" : "Birth date"} name="birthAt" type="date" required={false} />
+                    <FormSelect label={sw ? "Matokeo ya kuzaliwa" : "Birth outcome"} name="birthOutcome" required={false} options={birthOutcomes.map((outcome) => ({ value: outcome, label: outcome.toLowerCase() }))} />
+                  </ActionForm>
+                )}</td>
+              </tr>
+            );
+          })}</tbody></table></div>
+        ) : <p className="field-help">{sw ? "Bado hakuna matukio ya uzalishaji." : "No breeding records yet."}</p>}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
             <h3>{sw ? "Wanyama wenye alama" : "Tagged animals"}</h3>
             <p>{sw ? "Tumia namba ya utambulisho iliyopo shambani." : "Use the identification tags already used on the farm."}</p>
           </div>
@@ -332,8 +522,28 @@ export function AnimalSection({
             <FormField label={sw ? "Namba ya alama" : "Tag number"} name="tagNumber" required />
             <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
             <FormField label={sw ? "Aina ya uzalishaji" : "Breed"} name="breed" required={false} />
+            <FormSelect
+              label={sw ? "Rejista ya aina (si lazima)" : "Registered breed (optional)"}
+              name="breedId"
+              required={false}
+              options={data.animalBreeds.map((breed) => ({
+                value: breed.id,
+                label: `${breed.name} · ${breed.species}`,
+              }))}
+            />
             <FormField label={sw ? "Jinsia" : "Sex"} name="sex" required={false} />
             <FormField label={sw ? "Tarehe ya kuzaliwa" : "Birth date"} name="birthDate" type="date" />
+            <FormSelect
+              label={sw ? "Tukio la uzalishaji la mtoto (hiari)" : "Offspring breeding record (optional)"}
+              name="breedingRecordId"
+              required={false}
+              options={data.animalBreedingRecords.map((record) => ({
+                value: record.id,
+                label: `${record.damTag} / ${record.sireTag ?? record.semenBatch ?? "—"} · ${date(record.servedAt)}`,
+              }))}
+            />
+            <FormSelect label={sw ? "Mama (hiari)" : "Dam (optional)"} name="damId" required={false} options={animalOptions} />
+            <FormSelect label={sw ? "Baba (hiari)" : "Sire (optional)"} name="sireId" required={false} options={animalOptions} />
             <FormField label={sw ? "Chanzo (aliyezaliwa/aliyenunuliwa)" : "Source (born/bought)"} name="source" required={false} />
             {isOwner && <FormField label={sw ? `Bei ya ununuzi (${data.farm.currency}, ikiwa inanunuliwa)` : `Purchase price (${data.farm.currency}, if bought)`} name="purchasePrice" type="number" min="0" step="0.01" required={false} />}
             <FormField label={sw ? "Muuzaji" : "Seller"} name="seller" required={false} />
@@ -346,7 +556,9 @@ export function AnimalSection({
               <thead><tr>
                 <th>{sw ? "Alama" : "Tag"}</th>
                 <th>{sw ? "Aina" : "Species"}</th>
+                <th>{sw ? "Uzazi" : "Breed"}</th>
                 <th>{sw ? "Kikundi" : "Group"}</th>
+                <th>{sw ? "Wazazi" : "Parents"}</th>
                 <th>{sw ? "Jinsia" : "Sex"}</th>
                 {isOwner && <th>{sw ? "Bei ya ununuzi" : "Purchase price"}</th>}
                 {isOwner && <th>{sw ? "Muuzaji" : "Seller"}</th>}
@@ -357,7 +569,12 @@ export function AnimalSection({
                 <tr key={animal.id}>
                   <td>{animal.tagNumber}</td>
                   <td>{animal.species}</td>
+                  <td>{animal.breedName ?? "—"}</td>
                   <td>{animal.groupName ?? "—"}</td>
+                  <td>{[
+                    animal.damTag ? `${sw ? "Mama" : "Dam"}: ${animal.damTag}` : null,
+                    animal.sireTag ? `${sw ? "Baba" : "Sire"}: ${animal.sireTag}` : null,
+                  ].filter(Boolean).join(" · ") || "—"}</td>
                   <td>{animal.sex ?? "—"}</td>
                   {isOwner && <td>{animal.purchasePrice === null ? "—" : `${number(animal.purchasePrice)} ${data.farm.currency}`}</td>}
                   {isOwner && <td>{animal.seller ?? "—"}</td>}

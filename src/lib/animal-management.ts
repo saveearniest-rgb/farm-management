@@ -1,5 +1,5 @@
 export type AnimalCountEvent = {
-  type: "BIRTH" | "PURCHASE" | "SALE" | "DEATH" | "CULLED" | "WEANING" | "MOVE" | "OTHER";
+  type: "BIRTH" | "PURCHASE" | "SALE" | "DEATH" | "CULLED" | "WEANING" | "MOVE" | "BREEDING" | "OTHER";
   quantity: number | null;
 };
 

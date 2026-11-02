@@ -93,6 +93,7 @@ enum AnimalEventType {
   PURCHASE
   WEANING
   MOVE
+  BREEDING
   SALE
   DEATH
   CULLED
@@ -132,6 +133,42 @@ enum AnimalPerformanceType {
   WEIGHT
   MILK
   EGGS
+}
+
+enum AnimalPurpose {
+  MILK
+  MEAT
+  EGGS
+  DUAL
+  BREEDING
+  OTHER
+}
+
+enum AnimalTraitType {
+  BIRTH_WEIGHT
+  COLOR
+  HORN_STATUS
+  TEMPERAMENT
+  CONFORMATION
+  OTHER
+}
+
+enum AnimalBreedingMethod {
+  NATURAL
+  ARTIFICIAL_INSEMINATION
+}
+
+enum AnimalPregnancyResult {
+  POSITIVE
+  NEGATIVE
+  INCONCLUSIVE
+}
+
+enum AnimalBirthOutcome {
+  LIVE
+  STILLBORN
+  ABORTION
+  UNKNOWN
 }
 
 enum DataRequestType {
@@ -237,6 +274,11 @@ model Farm {
   animalHealthCases          AnimalHealthCase[]
   animalHealthRecords        AnimalHealthRecord[]
   animalPerformanceRecords   AnimalPerformanceRecord[]
+  animalSpeciesProfiles      AnimalSpeciesProfile[]
+  animalBreeds               AnimalBreed[]
+  animalBreedBenchmarks      AnimalBreedBenchmark[]
+  animalTraitRecords         AnimalTraitRecord[]
+  animalBreedingRecords      AnimalBreedingRecord[]
 }
 
 model FarmMember {
@@ -817,23 +859,33 @@ model StockMovement {
 }
 
 model Animal {
-  id            String    @id @default(cuid())
-  farmId        String
-  tagNumber     String
-  species       String
-  breed         String?
-  sex           String?
-  birthDate     DateTime?
-  source        String?
-  purchasePrice Decimal?  @db.Decimal(14, 2)
-  seller        String?
-  groupId       String?
-  status        String    @default("ACTIVE")
-  archivedAt    DateTime?
-  createdAt     DateTime  @default(now())
+  id               String    @id @default(cuid())
+  farmId           String
+  tagNumber        String
+  species          String
+  breed            String?
+  breedId          String?
+  sex              String?
+  birthDate        DateTime?
+  damId            String?
+  sireId           String?
+  breedingRecordId String?
+  source           String?
+  purchasePrice    Decimal?  @db.Decimal(14, 2)
+  seller           String?
+  groupId          String?
+  status           String    @default("ACTIVE")
+  archivedAt       DateTime?
+  createdAt        DateTime  @default(now())
 
   farm               Farm                      @relation(fields: [farmId], references: [id], onDelete: Cascade)
   group              AnimalGroup?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  breedReference     AnimalBreed?              @relation(fields: [breedId], references: [id], onDelete: SetNull)
+  dam                Animal?                   @relation("AnimalDam", fields: [damId], references: [id], onDelete: SetNull)
+  offspringAsDam     Animal[]                  @relation("AnimalDam")
+  sire               Animal?                   @relation("AnimalSire", fields: [sireId], references: [id], onDelete: SetNull)
+  offspringAsSire    Animal[]                  @relation("AnimalSire")
+  breedingRecord     AnimalBreedingRecord?     @relation(fields: [breedingRecordId], references: [id], onDelete: SetNull)
   events             AnimalEvent[]
   dailyRecords       AnimalDailyRecord[]
   expenseAllocations ExpenseAllocation[]
@@ -841,10 +893,68 @@ model Animal {
   healthCases        AnimalHealthCase[]
   healthRecords      AnimalHealthRecord[]
   performanceRecords AnimalPerformanceRecord[]
+  traitRecords       AnimalTraitRecord[]
+  breedingAsDam      AnimalBreedingRecord[]    @relation("BreedingDam")
+  breedingAsSire     AnimalBreedingRecord[]    @relation("BreedingSire")
 
   @@unique([farmId, tagNumber])
   @@index([farmId, species, status])
   @@index([farmId, groupId])
+  @@index([farmId, damId])
+  @@index([farmId, sireId])
+  @@index([farmId, breedId])
+  @@index([farmId, breedingRecordId])
+}
+
+model AnimalSpeciesProfile {
+  id            String       @id @default(cuid())
+  farmId        String
+  species       String
+  gestationDays Int?
+  sourceLabel   FigureLabel?
+  sourceDate    DateTime?
+  sourceNote    String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@unique([farmId, species])
+}
+
+model AnimalBreed {
+  id         String        @id @default(cuid())
+  farmId     String
+  species    String
+  name       String
+  purpose    AnimalPurpose
+  archivedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  farm       Farm                   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animals    Animal[]
+  benchmarks AnimalBreedBenchmark[]
+
+  @@unique([farmId, species, name])
+  @@index([farmId, species, archivedAt])
+}
+
+model AnimalBreedBenchmark {
+  id          String      @id @default(cuid())
+  farmId      String
+  breedId     String
+  traitName   String
+  value       String
+  unit        String?
+  sourceLabel FigureLabel
+  sourceDate  DateTime
+  sourceNote  String
+  createdAt   DateTime    @default(now())
+
+  farm  Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  breed AnimalBreed @relation(fields: [breedId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, breedId, traitName])
 }
 
 model AnimalGroup {
@@ -1064,6 +1174,53 @@ model AnimalPerformanceRecord {
   @@index([farmId, type, recordedAt])
   @@index([farmId, animalId, recordedAt])
   @@index([farmId, animalGroupId, recordedAt])
+}
+
+model AnimalTraitRecord {
+  id           String          @id @default(cuid())
+  farmId       String
+  animalId     String
+  type         AnimalTraitType
+  textValue    String?
+  numericValue Decimal?        @db.Decimal(14, 4)
+  unit         String?
+  recordedAt   DateTime        @default(now())
+  notes        String?
+  offlineId    String?         @unique
+  createdAt    DateTime        @default(now())
+
+  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal Animal @relation(fields: [animalId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, animalId, type, recordedAt])
+}
+
+model AnimalBreedingRecord {
+  id                 String                 @id @default(cuid())
+  farmId             String
+  damId              String
+  sireId             String?
+  semenBatch         String?
+  method             AnimalBreedingMethod
+  servedAt           DateTime
+  expectedBirthAt    DateTime?
+  pregnancyCheckedAt DateTime?
+  pregnancyResult    AnimalPregnancyResult?
+  birthAt            DateTime?
+  birthOutcome       AnimalBirthOutcome?
+  notes              String?
+  offlineId          String?                @unique
+  createdAt          DateTime               @default(now())
+
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  dam       Animal   @relation("BreedingDam", fields: [damId], references: [id], onDelete: Cascade)
+  sire      Animal?  @relation("BreedingSire", fields: [sireId], references: [id], onDelete: SetNull)
+  offspring Animal[]
+
+  @@index([farmId, servedAt])
+  @@index([farmId, damId, servedAt])
+  @@index([farmId, sireId, servedAt])
+  @@index([farmId, expectedBirthAt])
 }
 
 model ConsentRecord {
