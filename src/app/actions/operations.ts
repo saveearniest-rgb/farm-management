@@ -1,6 +1,6 @@
 "use server";
 
-import { CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
+import { AssetStatus, CropMode, CropReferenceKind, DocumentStatus, ExpenseCategory, FarmRole, PaymentMethod, Prisma, ScoutingSeverity, TaskStatus, TenureType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getAppContext } from "@/lib/auth";
@@ -1542,6 +1542,246 @@ export async function createMachineJobAction(
   }
   revalidatePath("/");
   return { message: "Machinery job recorded.", success: true };
+}
+
+export async function createAssetAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can manage assets.");
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(100),
+    type: z.string().trim().min(2).max(80),
+    purchasedAt: z.string().optional(),
+    purchaseCost: optionalNumber,
+    expectedLifeMonths: optionalNumber,
+    status: z.nativeEnum(AssetStatus),
+    notes: optionalText,
+  }).safeParse({
+    name: value(formData, "name"),
+    type: value(formData, "type"),
+    purchasedAt: value(formData, "purchasedAt"),
+    purchaseCost: value(formData, "purchaseCost"),
+    expectedLifeMonths: value(formData, "expectedLifeMonths"),
+    status: value(formData, "status") || AssetStatus.ACTIVE,
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.purchasedAt ?? "") ||
+    (parsed.data.purchaseCost !== undefined && parsed.data.purchaseCost < 0) ||
+    (parsed.data.expectedLifeMonths !== undefined &&
+      (!Number.isInteger(parsed.data.expectedLifeMonths) || parsed.data.expectedLifeMonths <= 0))
+  ) {
+    return invalid("Enter an asset name and type, with valid optional purchase details.");
+  }
+  try {
+    await tenantDb(context.farm.id, context.user.id).asset.create({
+      data: {
+        farmId: context.farm.id,
+        name: parsed.data.name,
+        type: parsed.data.type,
+        purchasedAt: optionalDate(parsed.data.purchasedAt ?? ""),
+        purchaseCost: parsed.data.purchaseCost === undefined
+          ? null
+          : new Prisma.Decimal(parsed.data.purchaseCost),
+        currency: context.farm.currency,
+        expectedLifeMonths: parsed.data.expectedLifeMonths,
+        status: parsed.data.status,
+        notes: parsed.data.notes,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Asset added.", success: true };
+}
+
+export async function archiveAssetAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can archive assets.");
+  const assetId = value(formData, "assetId");
+  if (!assetId) return invalid("Choose an asset to archive.");
+
+  const result = await tenantDb(context.farm.id, context.user.id).asset.updateMany({
+    where: { id: assetId, farmId: context.farm.id, archivedAt: null },
+    data: { archivedAt: new Date() },
+  });
+  if (result.count !== 1) return invalid("That active asset was not found in this farm.");
+  revalidatePath("/");
+  return { message: "Asset archived.", success: true };
+}
+
+export async function recordAssetUsageAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  const parsed = z.object({
+    assetId: z.string().min(1),
+    cycleId: optionalText,
+    plotId: optionalText,
+    usedAt: z.string().optional(),
+    hours: optionalNumber,
+    distance: optionalNumber,
+    distanceUnit: optionalText,
+    operator: optionalText,
+    fuelCost: z.coerce.number().finite().min(0),
+    notes: optionalText,
+  }).safeParse({
+    assetId: value(formData, "assetId"),
+    cycleId: value(formData, "cycleId"),
+    plotId: value(formData, "plotId"),
+    usedAt: value(formData, "usedAt"),
+    hours: value(formData, "hours"),
+    distance: value(formData, "distance"),
+    distanceUnit: value(formData, "distanceUnit"),
+    operator: value(formData, "operator"),
+    fuelCost: value(formData, "fuelCost") || "0",
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.usedAt ?? "") ||
+    (parsed.data.hours !== undefined && parsed.data.hours <= 0) ||
+    (parsed.data.distance !== undefined && parsed.data.distance <= 0) ||
+    (parsed.data.hours === undefined && parsed.data.distance === undefined) ||
+    (parsed.data.distance !== undefined && !parsed.data.distanceUnit) ||
+    (parsed.data.distance === undefined && parsed.data.distanceUnit)
+  ) {
+    return invalid("Enter a valid usage date and either positive hours or distance with its unit.");
+  }
+  if (context.role !== FarmRole.OWNER && parsed.data.fuelCost > 0) {
+    return invalid("Only the farm owner can record asset fuel costs.");
+  }
+  const [asset, cycle, plot] = await Promise.all([
+    tenantDb(context.farm.id, context.user.id).asset.findFirst({
+      where: { id: parsed.data.assetId, farmId: context.farm.id, archivedAt: null, status: AssetStatus.ACTIVE },
+      select: { id: true },
+    }),
+    parsed.data.cycleId
+      ? tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
+          where: { id: parsed.data.cycleId, farmId: context.farm.id },
+          select: { id: true, plotId: true },
+        })
+      : Promise.resolve(null),
+    parsed.data.plotId
+      ? tenantDb(context.farm.id, context.user.id).plot.findFirst({
+          where: { id: parsed.data.plotId, farmId: context.farm.id },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (!asset) return invalid("Choose an active asset from this farm.");
+  if (parsed.data.cycleId && !cycle) return invalid("Choose a crop cycle from this farm.");
+  if (parsed.data.plotId && !plot) return invalid("Choose a plot from this farm.");
+  if (cycle && plot && cycle.plotId !== plot.id) {
+    return invalid("The selected plot must match the crop cycle's plot.");
+  }
+
+  try {
+    await tenantDb(context.farm.id, context.user.id).assetUsage.create({
+      data: {
+        farmId: context.farm.id,
+        assetId: asset.id,
+        cycleId: cycle?.id ?? null,
+        plotId: plot?.id ?? cycle?.plotId ?? null,
+        usedAt: optionalDate(parsed.data.usedAt ?? "") ?? new Date(),
+        hours: parsed.data.hours === undefined ? null : new Prisma.Decimal(parsed.data.hours),
+        distance: parsed.data.distance === undefined ? null : new Prisma.Decimal(parsed.data.distance),
+        distanceUnit: parsed.data.distanceUnit ?? null,
+        operator: parsed.data.operator ?? null,
+        fuelCost: new Prisma.Decimal(context.role === FarmRole.OWNER ? parsed.data.fuelCost : 0),
+        currency: context.farm.currency,
+        notes: parsed.data.notes ?? null,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Asset usage recorded.", success: true };
+}
+
+export async function createAssetMaintenanceAction(
+  _previousState: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const context = await signedInFarm();
+  if (!context) return invalid("Your session expired. Sign in again.");
+  if (context.role !== FarmRole.OWNER) return invalid("Only a farm owner can record asset maintenance.");
+  const parsed = z.object({
+    assetId: z.string().min(1),
+    cycleId: optionalText,
+    performedAt: z.string().optional(),
+    description: z.string().trim().min(2).max(200),
+    cost: z.coerce.number().finite().min(0),
+    nextServiceAt: z.string().optional(),
+    notes: optionalText,
+  }).safeParse({
+    assetId: value(formData, "assetId"),
+    cycleId: value(formData, "cycleId"),
+    performedAt: value(formData, "performedAt"),
+    description: value(formData, "description"),
+    cost: value(formData, "cost") || "0",
+    nextServiceAt: value(formData, "nextServiceAt"),
+    notes: value(formData, "notes"),
+  });
+  if (
+    !parsed.success ||
+    dateError(parsed.data.performedAt ?? "") ||
+    dateError(parsed.data.nextServiceAt ?? "")
+  ) {
+    return invalid("Enter a maintenance description and valid dates.");
+  }
+  const [asset, cycle] = await Promise.all([
+    tenantDb(context.farm.id, context.user.id).asset.findFirst({
+      where: { id: parsed.data.assetId, farmId: context.farm.id, archivedAt: null },
+      select: { id: true },
+    }),
+    parsed.data.cycleId
+      ? tenantDb(context.farm.id, context.user.id).cropCycle.findFirst({
+          where: { id: parsed.data.cycleId, farmId: context.farm.id },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (!asset) return invalid("Choose an active asset from this farm.");
+  if (parsed.data.cycleId && !cycle) return invalid("Choose a crop cycle from this farm.");
+
+  try {
+    await tenantDb(context.farm.id, context.user.id).assetMaintenance.create({
+      data: {
+        farmId: context.farm.id,
+        assetId: asset.id,
+        cycleId: cycle?.id ?? null,
+        performedAt: optionalDate(parsed.data.performedAt ?? "") ?? new Date(),
+        description: parsed.data.description,
+        cost: new Prisma.Decimal(parsed.data.cost),
+        currency: context.farm.currency,
+        nextServiceAt: optionalDate(parsed.data.nextServiceAt ?? ""),
+        notes: parsed.data.notes ?? null,
+      },
+    });
+  } catch (error) {
+    const databaseMessage = message(error);
+    if (databaseMessage) return invalid(databaseMessage);
+    throw error;
+  }
+  revalidatePath("/");
+  return { message: "Asset maintenance recorded.", success: true };
 }
 
 export async function createStockItemAction(

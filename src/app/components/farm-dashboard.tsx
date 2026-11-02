@@ -29,6 +29,7 @@ import {
   Flower2,
   LayoutDashboard,
   Leaf,
+  LogOut,
   Map as MapIcon,
   MapPinned,
   Package,
@@ -38,7 +39,9 @@ import {
   Settings2,
   ShieldCheck,
   Sprout,
+  UserRound,
   Users,
+  Wrench,
   Wheat,
 } from "lucide-react";
 import {
@@ -48,6 +51,9 @@ import {
 import {
   createCropCycleAction,
   createCropTypeAction,
+  createAssetAction,
+  archiveAssetAction,
+  createAssetMaintenanceAction,
   createExpenseAction,
   createMachineJobAction,
   createHoldingAction,
@@ -67,6 +73,7 @@ import {
   recordSprayAction,
   recordSubsidyReceiptAction,
   recordWeatherAction,
+  recordAssetUsageAction,
   createCropReferenceAction,
   importCropReferencesAction,
   updateTaskStatusAction,
@@ -91,6 +98,7 @@ import {
   calculateProfitVarianceDriver,
   buildMonthlyCashFlow,
 } from "@/lib/economics";
+import { summarizeAssetCosts } from "@/lib/asset-costs";
 import { translate, type Locale } from "@/lib/i18n";
 import { ActionForm, FormField, FormSelect, FormTextArea } from "./action-form";
 import { LocaleSwitcher } from "./locale-switcher";
@@ -201,17 +209,37 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
   const activeCycles = data.cycles.filter((cycle) => cycle.status !== "CLOSED");
   const actualByCycle = useMemo(
     () => new Map(data.cycles.map((cycle) => {
-      const actual = calculateActuals({
-        expenses: data.expenses.flatMap((expense) => {
+      const cycleExpenseRows: Array<{ category: string; amount: number }> = [
+        ...data.expenses.flatMap((expense) => {
           const split = expense.allocations.filter((allocation) => allocation.cycleId === cycle.id);
-          if (split.length) return split.map((allocation) => ({ category: expense.category, amount: allocation.amount }));
-          return expense.cycleId === cycle.id ? [{ category: expense.category, amount: expense.amount }] : [];
-        }).concat(data.machineJobs
+          if (split.length) {
+            return split.map((allocation) => ({ category: expense.category, amount: allocation.amount }));
+          }
+          return expense.cycleId === cycle.id
+            ? [{ category: expense.category, amount: expense.amount }]
+            : [];
+        }),
+        ...data.machineJobs
           .filter((job) => job.cycleId === cycle.id)
           .map((job) => ({
             category: "MACHINERY",
             amount: job.fuelCost + job.hireCost + job.maintenanceCost,
-          }))),
+          })),
+        ...data.assetUsages
+          .filter((usage) => usage.cycleId === cycle.id)
+          .map((usage) => ({
+            category: "MACHINERY",
+            amount: usage.fuelCost ?? 0,
+          })),
+        ...data.assetMaintenances
+          .filter((maintenance) => maintenance.cycleId === cycle.id)
+          .map((maintenance) => ({
+            category: "MACHINERY",
+            amount: maintenance.cost ?? 0,
+          })),
+      ];
+      const actual = calculateActuals({
+        expenses: cycleExpenseRows,
         labour: data.workEntries.filter((entry) => entry.cycleId === cycle.id && entry.amount !== null)
           .map((entry) => ({ amount: entry.amount ?? 0 })),
         stockUsage: cycle.stockUsage,
@@ -220,13 +248,14 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
       });
       return [cycle.id, actual] as const;
     })),
-    [data.cycles, data.expenses, data.machineJobs, data.workEntries],
+    [data.assetMaintenances, data.assetUsages, data.cycles, data.expenses, data.machineJobs, data.workEntries],
   );
   const totalCosts = [...actualByCycle.values()].reduce((sum, actual) => sum + actual.totalCost, 0);
   const lowStockItems = data.stockItems.filter(
     (item) => item.lowStockThreshold !== null && item.balance <= item.lowStockThreshold,
   );
   const [search, setSearch] = useState("");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -372,6 +401,41 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
               <Bell size={18} />
               {dueToday > 0 && <span className="notification-dot" />}
             </button>
+            <div className="account-menu">
+              <button
+                aria-expanded={accountMenuOpen}
+                aria-label={locale === "sw" ? "Akaunti na kutoka" : "Account and sign out"}
+                className="icon-button account-menu-trigger"
+                onClick={() => setAccountMenuOpen((open) => !open)}
+                type="button"
+              >
+                <UserRound size={17} />
+              </button>
+              {accountMenuOpen && (
+                <section aria-label={locale === "sw" ? "Taarifa za akaunti" : "Account details"} className="account-menu-panel">
+                  <div className="account-menu-identity">
+                    <span className="profile-avatar">{initials(data.user.name)}</span>
+                    <div className="profile-info">
+                      <strong>{data.user.name}</strong>
+                      <span>{t(isOwner ? "owner" : "manager")}</span>
+                    </div>
+                  </div>
+                  <div className="account-field-mode">
+                    <span className="connectivity-icon"><CloudSun size={17} /></span>
+                    <div>
+                      <strong>{t("fieldMode")}</strong>
+                      <p>{locale === "sw" ? "Kumbukumbu za shamba husawazishwa mtandaoni." : "Field entries sync when you reconnect."}</p>
+                    </div>
+                  </div>
+                  <form action={logoutAction}>
+                    <button className="account-signout" type="submit">
+                      <LogOut size={16} />
+                      {t("signOut")}
+                    </button>
+                  </form>
+                </section>
+              )}
+            </div>
             <div className="topbar-date"><CalendarDays size={15} /> {new Intl.DateTimeFormat(locale === "sw" ? "sw-TZ" : "en-TZ", { weekday: "short", month: "short", day: "numeric" }).format(now)}</div>
           </div>
         </header>
@@ -1013,6 +1077,34 @@ function LabourSection({
     weeklyPay.set(entry.workerName, current);
   }
   const weeklyRows = [...weeklyPay.values()].sort((left, right) => left.name.localeCompare(right.name));
+  const assetCostRows = summarizeAssetCosts(data.assets, data.assetUsages, data.assetMaintenances);
+  const downloadAssetCosts = () => {
+    const quoteCsv = (value: string | number) => {
+      const text = String(value);
+      const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+      return `"${safe.replaceAll('"', '""')}"`;
+    };
+    const rows = [
+      ["Asset", "Type", "Hours", "Distance", "Distance unit", "Fuel cost", "Maintenance cost", "Total running cost"],
+      ...assetCostRows.map((row) => [
+        row.asset.name,
+        row.asset.type,
+        row.hours,
+        row.distance,
+        row.distanceUnit,
+        row.fuelCost,
+        row.maintenanceCost,
+        row.fuelCost + row.maintenanceCost,
+      ]),
+    ];
+    const csv = rows.map((row) => row.map(quoteCsv).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "shamba-asset-cost-report.csv";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   return (
     <div className="dashboard-content">
       <SectionHeading eyebrow="PEOPLE & COSTS" title={t("labour")} description={locale === "sw" ? "Rekodi saa kwa kazi na gharama ziunganishwe kwenye mzunguko." : "Record hours against farm work and connect labour cost to cycles."} />
@@ -1063,7 +1155,59 @@ function LabourSection({
             <FormField label={locale === "sw" ? "Tarehe" : "Date"} name="performedAt" type="date" />
           </ActionForm>
         </section>}
+        {isOwner && <section className="panel form-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Sajili kifaa" : "Register asset"}</h3><p>{locale === "sw" ? "Rekodi vifaa vinavyomilikiwa au kutumika shambani." : "Track farm equipment and its purchase details."}</p></div><Wrench size={20} /></div>
+          <ActionForm action={createAssetAction} submitLabel={t("save")} className="form-grid">
+            <FormField label={locale === "sw" ? "Jina la kifaa" : "Asset name"} name="name" required />
+            <FormField label={locale === "sw" ? "Aina" : "Type"} name="type" placeholder={locale === "sw" ? "Mfano: pampu" : "e.g. pump"} required />
+            <FormField label={locale === "sw" ? "Tarehe ya ununuzi" : "Purchase date"} name="purchasedAt" type="date" />
+            <FormField label={locale === "sw" ? `Gharama ya ununuzi (${data.farm.currency})` : `Purchase cost (${data.farm.currency})`} name="purchaseCost" type="number" min="0" step="0.01" />
+            <FormField label={locale === "sw" ? "Muda wa matumizi (miezi)" : "Expected life (months)"} name="expectedLifeMonths" type="number" min="1" step="1" />
+            <FormSelect label={locale === "sw" ? "Hali" : "Status"} name="status" options={[
+              { value: "ACTIVE", label: locale === "sw" ? "Inatumika" : "Active" },
+              { value: "IDLE", label: locale === "sw" ? "Haitumiki kwa sasa" : "Idle" },
+              { value: "RETIRED", label: locale === "sw" ? "Imestaafishwa" : "Retired" },
+            ]} />
+            <FormTextArea label={locale === "sw" ? "Maelezo" : "Notes"} name="notes" />
+          </ActionForm>
+        </section>}
+        <section className="panel form-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Rekodi matumizi ya kifaa" : "Record asset usage"}</h3><p>{locale === "sw" ? "Weka saa au umbali na uunganishe na mzunguko inapohusika." : "Log operating hours or distance and link the work to a crop cycle."}</p></div><Wrench size={20} /></div>
+          <ActionForm action={recordAssetUsageAction} submitLabel={t("save")} className="form-grid">
+            <FormSelect label={locale === "sw" ? "Kifaa" : "Asset"} name="assetId" options={data.assets.filter((asset) => asset.status === "ACTIVE").map((asset) => ({ value: asset.id, label: `${asset.name} · ${asset.type}` }))} />
+            <FormSelect label={locale === "sw" ? "Mzunguko wa zao" : "Crop cycle"} name="cycleId" required={false} options={data.cycles.map((cycle) => ({ value: cycle.id, label: `${cycle.cropName} · ${cycle.plotName}` }))} />
+            <FormSelect label={locale === "sw" ? "Kitalu" : "Plot"} name="plotId" required={false} options={data.plots.map((plot) => ({ value: plot.id, label: plot.name }))} />
+            <FormField label={locale === "sw" ? "Saa zilizotumika" : "Hours used"} name="hours" type="number" min="0.01" step="0.01" />
+            <FormField label={locale === "sw" ? "Umbali" : "Distance"} name="distance" type="number" min="0.01" step="0.01" />
+            <FormField label={locale === "sw" ? "Kipimo cha umbali" : "Distance unit"} name="distanceUnit" placeholder="km" />
+            <FormField label={locale === "sw" ? "Mwendeshaji" : "Operator"} name="operator" />
+            {isOwner && <FormField label={locale === "sw" ? `Gharama ya mafuta (${data.farm.currency})` : `Fuel cost (${data.farm.currency})`} name="fuelCost" type="number" min="0" step="0.01" />}
+            <FormField label={locale === "sw" ? "Tarehe" : "Date"} name="usedAt" type="date" />
+            <FormTextArea label={locale === "sw" ? "Maelezo" : "Notes"} name="notes" />
+          </ActionForm>
+        </section>
+        {isOwner && <section className="panel form-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Rekodi matengenezo" : "Record maintenance"}</h3><p>{locale === "sw" ? "Gharama na tarehe inayofuata ya huduma zinaweza kuunganishwa na mzunguko." : "Track service costs and the next service date."}</p></div><Wrench size={20} /></div>
+          <ActionForm action={createAssetMaintenanceAction} submitLabel={t("save")} className="form-grid">
+            <FormSelect label={locale === "sw" ? "Kifaa" : "Asset"} name="assetId" options={data.assets.map((asset) => ({ value: asset.id, label: `${asset.name} · ${asset.type}` }))} />
+            <FormSelect label={locale === "sw" ? "Mzunguko wa zao" : "Crop cycle (optional)"} name="cycleId" required={false} options={data.cycles.map((cycle) => ({ value: cycle.id, label: `${cycle.cropName} · ${cycle.plotName}` }))} />
+            <FormField label={locale === "sw" ? "Huduma iliyofanyika" : "Maintenance performed"} name="description" required />
+            <FormField label={locale === "sw" ? `Gharama (${data.farm.currency})` : `Cost (${data.farm.currency})`} name="cost" type="number" min="0" step="0.01" />
+            <FormField label={locale === "sw" ? "Tarehe ya huduma" : "Service date"} name="performedAt" type="date" />
+            <FormField label={locale === "sw" ? "Huduma inayofuata" : "Next service due"} name="nextServiceAt" type="date" />
+            <FormTextArea label={locale === "sw" ? "Maelezo" : "Notes"} name="notes" />
+          </ActionForm>
+        </section>}
       </div>
+      <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Daftari la vifaa" : "Asset register"}</h3><p>{data.assets.length} {locale === "sw" ? "vifaa hai" : "active assets"}</p></div></div>
+        {data.assets.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Kifaa" : "Asset"}</th><th>{locale === "sw" ? "Aina" : "Type"}</th><th>{locale === "sw" ? "Hali" : "Status"}</th><th>{locale === "sw" ? "Ununuzi" : "Purchased"}</th>{isOwner && <th>{locale === "sw" ? "Gharama" : "Purchase cost"}</th>}<th>{locale === "sw" ? "Muda wa matumizi" : "Expected life"}</th>{isOwner && <th>{locale === "sw" ? "Kitendo" : "Action"}</th>}</tr></thead><tbody>{data.assets.map((asset) => <tr key={asset.id}><td><strong>{asset.name}</strong></td><td>{asset.type}</td><td>{titleCase(asset.status)}</td><td>{dateLabel(asset.purchasedAt, locale)}</td>{isOwner && <td>{asset.purchaseCost === null ? "—" : money(asset.purchaseCost, asset.currency, locale)}</td>}<td>{asset.expectedLifeMonths === null ? "—" : `${number(asset.expectedLifeMonths, locale, 0)} ${locale === "sw" ? "miezi" : "months"}`}</td>{isOwner && <td><ActionForm action={archiveAssetAction} submitLabel={locale === "sw" ? "Hifadhi" : "Archive"}><input name="assetId" type="hidden" value={asset.id} /></ActionForm></td>}</tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Sajili kifaa ili kuanza kufuatilia matumizi." : "Register an asset to track use and service."} />}
+      </section>
+      {isOwner && <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Ripoti ya gharama za vifaa" : "Asset cost report"}</h3><div className="button-row"><p>{locale === "sw" ? "Mafuta na matengenezo kwa kifaa." : "Fuel and maintenance costs by asset."}</p><button className="button button-quiet" onClick={downloadAssetCosts} type="button"><Download size={16} /> {locale === "sw" ? "Pakua CSV" : "Download CSV"}</button><button className="button button-quiet print-button" onClick={() => window.print()} type="button"><Printer size={16} /> {locale === "sw" ? "Chapisha / PDF" : "Print / PDF"}</button></div></div></div>
+        {assetCostRows.length ? <div className="table-scroll"><table><thead><tr><th>{locale === "sw" ? "Kifaa" : "Asset"}</th><th>{locale === "sw" ? "Saa" : "Hours"}</th><th>{locale === "sw" ? "Umbali" : "Distance"}</th><th>{locale === "sw" ? "Mafuta" : "Fuel"}</th><th>{locale === "sw" ? "Matengenezo" : "Maintenance"}</th><th>{locale === "sw" ? "Jumla" : "Total"}</th></tr></thead><tbody>{assetCostRows.map((row) => <tr key={row.asset.id}><td>{row.asset.name}</td><td>{number(row.hours, locale, 2)}</td><td>{row.distance ? `${number(row.distance, locale, 2)} ${row.distanceUnit}` : "—"}</td><td>{money(row.fuelCost, data.farm.currency, locale)}</td><td>{money(row.maintenanceCost, data.farm.currency, locale)}</td><td>{money(row.fuelCost + row.maintenanceCost, data.farm.currency, locale)}</td></tr>)}</tbody></table></div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Gharama za vifaa zitaonekana baada ya kurekodi matumizi au matengenezo." : "Asset costs appear after usage or maintenance is recorded."} />}
+      </section>}
+      <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Matumizi na matengenezo ya hivi karibuni" : "Recent asset usage and maintenance"}</h3><p>{data.assetUsages.length + data.assetMaintenances.length} {locale === "sw" ? "rekodi" : "records"}</p></div></div>
+        {data.assetUsages.length || data.assetMaintenances.length ? <div className="data-list">
+          {data.assetUsages.map((usage) => <div className="data-row" key={`usage-${usage.id}`}><span className="data-row-icon"><Wrench size={17} /></span><div><strong>{usage.assetName} · {locale === "sw" ? "Matumizi" : "Usage"}</strong><span>{usage.cropName || usage.plotName || (locale === "sw" ? "Shughuli za shamba" : "Farm operation")}{usage.operator ? ` · ${usage.operator}` : ""}</span></div><time>{[usage.hours ? `${number(usage.hours, locale, 2)} h` : "", usage.distance ? `${number(usage.distance, locale, 2)} ${usage.distanceUnit}` : "", dateLabel(usage.usedAt, locale)].filter(Boolean).join(" · ")}</time></div>)}
+          {data.assetMaintenances.map((entry) => <div className="data-row" key={`maintenance-${entry.id}`}><span className="data-row-icon"><Wrench size={17} /></span><div><strong>{entry.assetName} · {entry.description}</strong><span>{entry.cropName || (locale === "sw" ? "Matengenezo ya jumla" : "General maintenance")}{entry.nextServiceAt ? ` · ${locale === "sw" ? "Huduma inayofuata" : "Next service"}: ${dateLabel(entry.nextServiceAt, locale)}` : ""}</span></div><time>{dateLabel(entry.performedAt, locale)}{isOwner && entry.cost !== null ? ` · ${money(entry.cost, entry.currency, locale)}` : ""}</time></div>)}
+        </div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Matumizi na matengenezo yataonekana hapa." : "Asset usage and service records will appear here."} />}
+      </section>
       <section className="panel data-panel"><div className="panel-header"><div><h3>{locale === "sw" ? "Wafanyakazi" : "Workers"}</h3><p>{data.workers.length} {locale === "sw" ? "wafanyakazi hai" : "active workers"}</p></div></div>
         {data.workers.length ? <div className="worker-card-grid">{data.workers.map((worker) => <article className="worker-card" key={worker.id}><span className="profile-avatar">{initials(worker.name)}</span><div><strong>{worker.name}</strong><span>{worker.hourlyRate === null ? (locale === "sw" ? "Kiwango hakijawekwa" : "Rate not set") : `${money(worker.hourlyRate, worker.currency, locale)} / ${locale === "sw" ? "saa" : "hour"}`}</span></div><span className="status-pill status-done">{locale === "sw" ? "Hai" : "Active"}</span></article>)}</div> : <EmptyState title={t("noData")} detail={locale === "sw" ? "Ongeza mfanyakazi ili kurekodi saa." : "Add a worker to start tracking hours."} />}
       </section>

@@ -95,7 +95,7 @@ Uploaded JPEG, PNG, WebP and PDF files are stored privately and encrypted on loc
 - Nursery/direct-sown crop types, stage and care templates, crop cycles
 - Nursery batches, checks, transplants, tasks, reminders and activity notes
 - Weather observations, pest/disease scouting, spray records and pre-harvest interval warnings
-- Worker records, hours, recent pay summary, split expenses, machinery jobs, basic stock and suppliers/lots
+- Worker records, hours, recent pay summary, split expenses, an asset register with usage and maintenance costs, and basic stock and suppliers/lots
 - Farm size stored separately from the default plot area unit; crop-specific disease and pesticide catalog with manual entry and Excel-compatible CSV import
 - Optional national farmer ID and subsidised-input receipts, with an owner-visible audit log
 - Crop plans with editable expected, low-price and low-yield scenarios; harvest/sales actuals; plan-vs-actual reports with a profit-variance driver; formula-driven Excel workbook, CSV and browser print-to-PDF exports; farm JSON/CSV export
@@ -131,6 +131,6 @@ Use a clearly labelled test farm and test records for a pretend cycle; do not tr
 3. Start a crop cycle on the plot. For nursery crops, record a seed batch, survival check and transplant count.
 4. Add or update care tasks and record daily work. Supported forms queue offline and sync when signal returns; check the sync status before closing the browser.
 5. Add observed rainfall/temperature, scouting findings or spray records. When a cycle has a known expected harvest date, a recorded pre-harvest interval is checked against it.
-6. Record workers, hours, split expenses, machinery jobs, stock usage, harvests and sales, then review the cycle report and export or print it.
+6. Record workers and hours, split expenses, register assets and log their cycle-linked usage or maintenance, record stock usage, harvests and sales, then review the cycle report and export or print it. Asset running costs are fuel and maintenance records; purchase cost is not depreciated into cycle costs.
 7. Upload a document or photo while online, create an export request in Farm settings, then download JSON or CSV. Exports include attachment metadata, not the files themselves.
 8. In Cycle economics, save an expected plan with verified values and cost lines. Review the generated downside cases, edit the monthly harvest shares in the Excel workbook if needed, and compare the plan with recorded results.

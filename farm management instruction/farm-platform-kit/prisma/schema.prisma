@@ -1,0 +1,401 @@
+// Starter schema for slices 1 to 3: accounts, farms, land, plots, crop types, crop SOPs, crop cycles.
+// Later slices extend it (nursery, tasks, labour, expenses, stock, plans, consents).
+// Rules: every farm-owned table has farmId; money is Decimal with a currency; archive instead of delete.
+// The connection URL is not set here. Current Prisma versions read it from prisma.config.ts
+// (see prisma.config.example.ts in the project root) and the client takes an adapter.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Enums ----------
+
+enum FarmRole {
+  OWNER
+  MANAGER
+}
+
+enum Locale {
+  EN
+  SW
+}
+
+enum AreaUnit {
+  ACRE
+  HECTARE
+  SQM
+}
+
+enum HoldingKind {
+  OWNED
+  RENTED
+}
+
+enum TenureType {
+  TITLE
+  CUSTOMARY_CERTIFICATE
+  LEASE
+  INFORMAL
+  OTHER
+}
+
+enum TenureDocStatus {
+  NONE
+  PENDING
+  HELD
+}
+
+enum DisputeStatus {
+  OPEN
+  RESOLVED
+}
+
+enum CropMode {
+  NURSERY
+  DIRECT
+}
+
+// Where a reference value came from. Never present an invented number as a fact.
+enum DataSource {
+  BENCHMARK
+  LOCAL_QUOTE
+  FARM_ACTUAL
+}
+
+enum TaskType {
+  WATER
+  FERTILIZE
+  WEED
+  SPRAY
+  PRUNE
+  STAKE
+  THIN
+  SCOUT
+  OTHER
+}
+
+enum SopStatus {
+  DRAFT
+  ACTIVE
+  SUPERSEDED
+}
+
+enum CycleStatus {
+  PLANNED
+  ACTIVE
+  HARVESTING
+  CLOSED
+  ABANDONED
+}
+
+// ---------- Accounts and farms ----------
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String?  @unique
+  phone        String?  @unique
+  passwordHash String
+  locale       Locale   @default(EN)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships FarmMember[]
+  auditLogs   AuditLog[]
+}
+
+model Farm {
+  id               String   @id @default(cuid())
+  name             String
+  region           String?
+  district         String?
+  country          String   @default("TZ")
+  currency         String   @default("TZS") // ISO code; TZS default, USD allowed
+  areaUnit         AreaUnit @default(ACRE)
+  timezone         String   @default("Africa/Dar_es_Salaam")
+  nationalFarmerId String? // optional government farmer registration number
+  cropsEnabled     Boolean  @default(true) // division switches; the animal division is not built yet
+  animalsEnabled   Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  archivedAt       DateTime?
+
+  members     FarmMember[]
+  invites     FarmInvite[]
+  holdings    LandHolding[]
+  plots       Plot[]
+  cropTypes   CropType[]
+  cropCycles  CropCycle[]
+  cropSops    CropSop[]
+  attachments FileAttachment[]
+  auditLogs   AuditLog[]
+}
+
+model FarmMember {
+  id        String   @id @default(cuid())
+  farmId    String
+  userId    String
+  role      FarmRole
+  createdAt DateTime @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([farmId, userId])
+  @@index([userId])
+}
+
+model FarmInvite {
+  id         String    @id @default(cuid())
+  farmId     String
+  code       String    @unique
+  role       FarmRole  @default(MANAGER)
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id])
+
+  @@index([farmId])
+}
+
+// ---------- Land and plots ----------
+
+model LandHolding {
+  id               String          @id @default(cuid())
+  farmId           String
+  name             String
+  kind             HoldingKind
+  tenureType       TenureType      @default(OTHER)
+  tenureDocStatus  TenureDocStatus @default(NONE)
+  tenureRenewalOn  DateTime?       @db.Date
+  purchasePrice    Decimal?        @db.Decimal(18, 2)
+  rentAmount       Decimal?        @db.Decimal(18, 2)
+  rentPeriodMonths Int?
+  currency         String          @default("TZS")
+  ownerName        String?
+  startDate        DateTime?       @db.Date
+  endDate          DateTime?       @db.Date
+  notes            String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  archivedAt       DateTime?
+
+  farm     Farm            @relation(fields: [farmId], references: [id])
+  plots    Plot[]
+  disputes TenureDispute[]
+
+  @@index([farmId])
+}
+
+model TenureDispute {
+  id          String        @id @default(cuid())
+  farmId      String
+  holdingId   String
+  raisedOn    DateTime      @db.Date
+  description String
+  status      DisputeStatus @default(OPEN)
+  resolvedOn  DateTime?     @db.Date
+  createdAt   DateTime      @default(now())
+
+  holding LandHolding @relation(fields: [holdingId], references: [id])
+
+  @@index([farmId])
+  @@index([holdingId])
+}
+
+model Plot {
+  id          String    @id @default(cuid())
+  farmId      String
+  holdingId   String
+  name        String
+  area        Decimal   @db.Decimal(18, 4)
+  areaUnit    AreaUnit  @default(ACRE)
+  soilType    String?
+  waterSource String?
+  latitude    Decimal?  @db.Decimal(9, 6)
+  longitude   Decimal?  @db.Decimal(9, 6)
+  boundary    Json? // GeoJSON polygon, optional, added later
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  archivedAt  DateTime?
+
+  farm       Farm        @relation(fields: [farmId], references: [id])
+  holding    LandHolding @relation(fields: [holdingId], references: [id])
+  cropCycles CropCycle[]
+
+  @@unique([farmId, name])
+  @@index([holdingId])
+}
+
+// ---------- Crops and templates ----------
+
+// farmId = null means a platform default that farms can copy and edit.
+model CropType {
+  id                    String     @id @default(cuid())
+  farmId                String?
+  name                  String
+  nameSw                String?
+  mode                  CropMode
+  defaultCycleDays      Int?
+  defaultPlantsPerAcre  Decimal?   @db.Decimal(12, 2)
+  expectedYieldPerPlant Decimal?   @db.Decimal(12, 4)
+  yieldUnit             String? // for example kg
+  region                String? // optional region this default applies to
+  dataSource            DataSource @default(BENCHMARK)
+  sourceDate            DateTime?  @db.Date
+  sourceNote            String?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  archivedAt            DateTime?
+
+  farm       Farm?            @relation(fields: [farmId], references: [id])
+  stages     StageTemplate[]
+  careRules  CareTemplate[]
+  cropCycles CropCycle[]
+  sops       CropSop[]
+
+  @@unique([farmId, name])
+  @@index([farmId])
+}
+
+// The written standard for growing one crop. Stage and care templates are its schedule part.
+// Plants per acre is calculated: 4046.86 x usableAreaShare / (rowSpacingM x plantSpacingM). Never typed.
+model CropSop {
+  id                String     @id @default(cuid())
+  farmId            String?
+  cropTypeId        String
+  version           Int        @default(1)
+  status            SopStatus  @default(DRAFT)
+  agronomistReviewed Boolean   @default(false)
+  rowSpacingM       Decimal?   @db.Decimal(8, 3)
+  plantSpacingM     Decimal?   @db.Decimal(8, 3)
+  usableAreaShare   Decimal?   @db.Decimal(5, 4) // 0 to 1
+  gapFillDays       Int?
+  acceptedGapPct    Decimal?   @db.Decimal(5, 2)
+  sections          Json? // free-form sections: site, planting, nutrition, water, pests, care, harvest, post-harvest, records
+  dataSource        DataSource @default(BENCHMARK)
+  sourceNote        String?
+  changeLog         String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  farm       Farm?       @relation(fields: [farmId], references: [id])
+  cropType   CropType    @relation(fields: [cropTypeId], references: [id])
+  cropCycles CropCycle[]
+
+  @@unique([cropTypeId, farmId, version])
+  @@index([farmId])
+}
+
+model StageTemplate {
+  id           String   @id @default(cuid())
+  cropTypeId   String
+  position     Int
+  name         String
+  nameSw       String?
+  expectedDays Int
+
+  cropType  CropType       @relation(fields: [cropTypeId], references: [id])
+  careRules CareTemplate[]
+
+  @@unique([cropTypeId, position])
+}
+
+model CareTemplate {
+  id              String   @id @default(cuid())
+  cropTypeId      String
+  stageId         String?
+  taskType        TaskType
+  title           String
+  titleSw         String?
+  repeatEveryDays Int? // null means once
+  startOffsetDays Int      @default(0) // days after the stage starts
+  notes           String?
+
+  cropType CropType       @relation(fields: [cropTypeId], references: [id])
+  stage    StageTemplate? @relation(fields: [stageId], references: [id])
+
+  @@index([cropTypeId])
+}
+
+// ---------- Crop cycles ----------
+
+model CropCycle {
+  id                   String      @id @default(cuid())
+  farmId               String
+  plotId               String
+  cropTypeId           String
+  sopId                String? // the SOP version this cycle followed
+  variety              String?
+  areaPlanted          Decimal     @db.Decimal(18, 4)
+  areaUnit             AreaUnit    @default(ACRE)
+  status               CycleStatus @default(PLANNED)
+  currentStagePosition Int? // position in the crop type's stage templates
+  plannedStart         DateTime    @db.Date
+  actualStart          DateTime?   @db.Date
+  expectedHarvestStart DateTime?   @db.Date
+  actualHarvestStart   DateTime?   @db.Date
+  closedOn             DateTime?   @db.Date
+  expectedYield        Decimal?    @db.Decimal(18, 4)
+  actualYield          Decimal?    @db.Decimal(18, 4)
+  yieldUnit            String?
+  notes                String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  archivedAt           DateTime?
+
+  farm     Farm     @relation(fields: [farmId], references: [id])
+  plot     Plot     @relation(fields: [plotId], references: [id])
+  cropType CropType @relation(fields: [cropTypeId], references: [id])
+  sop      CropSop? @relation(fields: [sopId], references: [id])
+
+  @@index([farmId])
+  @@index([plotId])
+  @@index([cropTypeId])
+}
+
+// ---------- Files and audit ----------
+
+// Attached to any record by entity name and id; storage is an adapter (local disk now, S3 later).
+model FileAttachment {
+  id          String   @id @default(cuid())
+  farmId      String
+  entityType  String // for example LandHolding, Plot, CropCycle
+  entityId    String
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  storageKey  String
+  sha256      String?
+  uploadedBy  String?
+  createdAt   DateTime @default(now())
+  archivedAt  DateTime?
+
+  farm Farm @relation(fields: [farmId], references: [id])
+
+  @@index([farmId, entityType, entityId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  farmId     String?
+  userId     String?
+  entityType String
+  entityId   String
+  action     String // CREATE, UPDATE, ARCHIVE, LOGIN, and so on
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  farm Farm? @relation(fields: [farmId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([farmId, createdAt])
+  @@index([entityType, entityId])
+}

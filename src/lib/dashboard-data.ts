@@ -37,6 +37,9 @@ export async function getDashboardData(context: Context) {
     auditEntries,
     rawSubsidies,
     rawMachineJobs,
+    rawAssets,
+    rawAssetUsages,
+    rawAssetMaintenances,
     rawAttachments,
   ] = await Promise.all([
     db.landHolding.findMany({
@@ -237,6 +240,29 @@ export async function getDashboardData(context: Context) {
             include: { cycle: { include: { cropType: { select: { name: true } } } }, plot: { select: { name: true } } },
           })
         : Promise.resolve([]),
+    db.asset.findMany({
+      where: { farmId, archivedAt: null },
+      orderBy: [{ status: "asc" }, { name: "asc" }],
+    }),
+    db.assetUsage.findMany({
+      where: { farmId },
+      orderBy: { usedAt: "desc" },
+      take: 150,
+      include: {
+        asset: { select: { name: true } },
+        cycle: { include: { cropType: { select: { name: true } } } },
+        plot: { select: { name: true } },
+      },
+    }),
+    db.assetMaintenance.findMany({
+      where: { farmId },
+      orderBy: { performedAt: "desc" },
+      take: 100,
+      include: {
+        asset: { select: { name: true } },
+        cycle: { include: { cropType: { select: { name: true } } } },
+      },
+    }),
     db.fileAttachment.findMany({
         where: { farmId },
         orderBy: { createdAt: "desc" },
@@ -488,6 +514,46 @@ export async function getDashboardData(context: Context) {
       maintenanceCost: numeric(job.maintenanceCost) ?? 0,
       currency: job.currency,
       performedAt: iso(job.performedAt),
+    })),
+    assets: rawAssets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      purchasedAt: iso(asset.purchasedAt),
+      purchaseCost: isOwner ? numeric(asset.purchaseCost) : null,
+      currency: asset.currency,
+      expectedLifeMonths: asset.expectedLifeMonths,
+      status: asset.status,
+      notes: asset.notes,
+    })),
+    assetUsages: rawAssetUsages.map((usage) => ({
+      id: usage.id,
+      assetId: usage.assetId,
+      assetName: usage.asset.name,
+      cycleId: usage.cycleId,
+      cropName: usage.cycle?.cropType.name ?? null,
+      plotName: usage.plot?.name ?? null,
+      usedAt: iso(usage.usedAt),
+      hours: numeric(usage.hours),
+      distance: numeric(usage.distance),
+      distanceUnit: usage.distanceUnit,
+      operator: usage.operator,
+      fuelCost: isOwner ? numeric(usage.fuelCost) : null,
+      currency: usage.currency,
+      notes: usage.notes,
+    })),
+    assetMaintenances: rawAssetMaintenances.map((maintenance) => ({
+      id: maintenance.id,
+      assetId: maintenance.assetId,
+      assetName: maintenance.asset.name,
+      cycleId: maintenance.cycleId,
+      cropName: maintenance.cycle?.cropType.name ?? null,
+      performedAt: iso(maintenance.performedAt),
+      description: maintenance.description,
+      cost: isOwner ? numeric(maintenance.cost) : null,
+      currency: maintenance.currency,
+      nextServiceAt: iso(maintenance.nextServiceAt),
+      notes: maintenance.notes,
     })),
     attachments: rawAttachments.map((attachment) => {
       const recordType = attachment.landHoldingId ? "holding"
