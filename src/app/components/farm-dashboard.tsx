@@ -43,6 +43,7 @@ import {
   Settings2,
   ShieldCheck,
   Sprout,
+  TrendingUp,
   UserRound,
   Users,
   Wrench,
@@ -112,10 +113,11 @@ import { ThemeToggle } from "./theme-toggle";
 import { FileAttachments } from "./file-attachments";
 import { OfflineSyncStatus } from "./offline-sync-status";
 import { AnimalSection, type AnimalSectionId } from "./animal-section";
+import { MarketPricesSection } from "./market-prices-section";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number; strokeWidth?: number }>;
 type DivisionId = "crops" | "animals";
-type SectionId = "overview" | "land" | "crops" | "nursery" | "tasks" | "inputs" | "labour" | "reports" | "settings" | "animals";
+type SectionId = "overview" | "land" | "crops" | "nursery" | "tasks" | "inputs" | "labour" | "marketPrices" | "reports" | "settings" | "animals";
 type SearchResult = {
   id: string;
   title: string;
@@ -132,6 +134,7 @@ const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; divis
   { id: "tasks", key: "tasks", icon: ClipboardCheck, division: "crops" },
   { id: "inputs", key: "inputs", icon: Package, division: "crops" },
   { id: "labour", key: "labour", icon: Users, division: "crops" },
+  { id: "marketPrices", key: "marketPrices", icon: TrendingUp, division: "crops" },
   { id: "reports", key: "reports", icon: BarChart3, division: "crops", ownerOnly: true },
   { id: "settings", key: "settings", icon: Settings2, division: "crops" },
   { id: "animals", key: "animalFarming", icon: PawPrint, division: "animals" },
@@ -490,6 +493,8 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
         return <InputsSection data={data} locale={locale} isOwner={isOwner} />;
       case "labour":
         return <LabourSection data={data} locale={locale} isOwner={isOwner} />;
+      case "marketPrices":
+        return <MarketPricesSection locale={locale} />;
       case "reports":
         return isOwner ? (
           <ReportsSection
