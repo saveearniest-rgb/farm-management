@@ -1,16 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   archiveAnimalAction,
   archiveAnimalGroupAction,
   createAnimalBreedAction,
   createAnimalBreedBenchmarkAction,
   createAnimalAction,
+  createAnimalsBulkAction,
   createAnimalGroupAction,
   createAnimalHealthProductAction,
   createAnimalSalesForecastAction,
   createAnimalVaccinationScheduleAction,
+  createStockItemAction,
   recordAnimalHealthAction,
   recordAnimalHealthCaseAction,
   recordAnimalDailyAction,
@@ -28,6 +30,7 @@ import {
 import {
   calculateCurrentAnimalCount,
   calculateFeedPlan,
+  calculateFeedNutrientIntake,
 } from "@/lib/animal-management";
 import {
   calculateAverageDailyWeightGain,
@@ -37,6 +40,7 @@ import { areCloseRelatives } from "@/lib/animal-breeding";
 import type { DashboardData } from "@/lib/dashboard-data";
 import type { Locale } from "@/lib/i18n";
 import { ActionForm, FormField, FormSelect, FormTextArea } from "./action-form";
+import { Plus } from "lucide-react";
 
 const eventTypes = [
   "BIRTH",
@@ -66,6 +70,58 @@ const animalProductLines = [
   "BREEDING_SERVICE",
   "OTHER",
 ] as const;
+
+export type AnimalSectionId = "overview" | "herd" | "breeding" | "daily" | "feed" | "health" | "income";
+
+type OverviewMetric = {
+  label: string;
+  value: string;
+  hasData: boolean;
+};
+
+function AnimalOverviewGroup({
+  title,
+  metrics,
+  emptyLabel,
+  countLabel,
+}: {
+  title: string;
+  metrics: OverviewMetric[];
+  emptyLabel: string;
+  countLabel: (count: number) => string;
+}) {
+  const visibleMetrics = metrics.filter((metric) => metric.hasData);
+
+  return (
+    <details className="animal-overview-group">
+      <summary>
+        <strong>{title}</strong>
+        <span>{visibleMetrics.length ? countLabel(visibleMetrics.length) : emptyLabel}</span>
+      </summary>
+      {visibleMetrics.length ? (
+        <div className="plan-kpi-grid">
+          {visibleMetrics.map((metric) => (
+            <div className="plan-kpi" key={metric.label}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="field-help">{emptyLabel}</p>
+      )}
+    </details>
+  );
+}
+
+function AddDisclosure({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details className="animal-form-disclosure">
+      <summary><Plus size={15} />{title}</summary>
+      {children}
+    </details>
+  );
+}
 
 function productLineLabel(productLine: string, locale: Locale) {
   const sw: Record<string, string> = {
@@ -146,14 +202,19 @@ export function AnimalSection({
   data,
   locale,
   isOwner,
+  activeSection,
 }: {
   data: DashboardData;
   locale: Locale;
   isOwner: boolean;
+  activeSection: AnimalSectionId;
 }) {
   const sw = locale === "sw";
   const [planningDays, setPlanningDays] = useState(7);
-  const feedItems = data.stockItems.filter((item) => item.category === "FEED");
+  const feedItems = useMemo(
+    () => data.stockItems.filter((item) => item.category === "FEED"),
+    [data.stockItems],
+  );
   const groupOptions = data.animalGroups.map((group) => ({
     value: group.id,
     label: `${group.name} · ${group.species} · ${group.trackingMode === "INDIVIDUAL" ? (sw ? "binafsi" : "individual") : (sw ? "idadi" : "head count")}`,
@@ -163,7 +224,7 @@ export function AnimalSection({
   );
   const animalOptions = data.animals.map((animal) => ({
     value: animal.id,
-    label: `${animal.tagNumber} · ${animal.species}`,
+    label: `${animal.name ? `${animal.name} · ` : ""}${animal.tagNumber} · ${animal.species}`,
   }));
   const dailyOptions = dailyTypes.map((type) => ({
     value: type,
@@ -187,23 +248,39 @@ export function AnimalSection({
     })),
     [data.animalGroups, data.animals],
   );
-  const feedPlans = groupsWithCounts.flatMap((group) =>
-    group.feedRations.map((ration) => {
-      const item = feedItems.find((stockItem) => stockItem.id === ration.itemId);
-      if (!item) return null;
-      return {
-        group,
-        ration,
-        ...calculateFeedPlan({
-          groupCount: group.currentCount,
-          quantityPerHead: ration.quantityPerHead,
-          days: planningDays,
-          stock: item.balance,
-        }),
-      };
-    }).filter((plan) => plan !== null),
+  const feedPlans = useMemo(
+    () => groupsWithCounts.flatMap((group) =>
+      group.feedRations.map((ration) => {
+        const item = feedItems.find((stockItem) => stockItem.id === ration.itemId);
+        if (!item) return null;
+        return {
+          group,
+          ration,
+          item,
+          ...calculateFeedPlan({
+            groupCount: group.currentCount,
+            quantityPerHead: ration.quantityPerHead,
+            days: planningDays,
+            stock: item.balance,
+          }),
+          nutrition: calculateFeedNutrientIntake({
+            groupCount: group.currentCount,
+            quantityPerHead: ration.quantityPerHead,
+            unit: ration.unit,
+            days: planningDays,
+            crudeProteinPct: item.crudeProteinPct,
+            crudeFiberPct: item.crudeFiberPct,
+          }),
+        };
+      }).filter((plan) => plan !== null),
+    ),
+    [feedItems, groupsWithCounts, planningDays],
   );
-  const eventRows = [
+  const feedUseRecords = data.animalDailyRecords.filter((record) =>
+    record.type === "FEEDING" && record.feedItemId,
+  );
+  const feedPerformanceRecords = data.animalPerformanceRecords.filter((record) => record.feedItemId);
+  const eventRows = useMemo(() => [
     ...data.animalGroups.flatMap((group) => group.events.map((event) => ({
       id: event.id,
       target: group.name,
@@ -224,7 +301,10 @@ export function AnimalSection({
       seller: event.seller,
       notes: event.notes,
     }))),
-  ].sort((a, b) => new Date(b.occurredAt ?? 0).getTime() - new Date(a.occurredAt ?? 0).getTime());
+  ].sort((a, b) => new Date(b.occurredAt ?? 0).getTime() - new Date(a.occurredAt ?? 0).getTime()), [
+    data.animalGroups,
+    data.animals,
+  ]);
   const date = (value: string | null) => value
     ? new Intl.DateTimeFormat(sw ? "sw-TZ" : "en-TZ", { dateStyle: "medium" }).format(new Date(value))
     : "—";
@@ -259,66 +339,69 @@ export function AnimalSection({
       ),
     ),
   );
-  const scheduleReminders = data.animalVaccinationSchedules.flatMap((schedule) => {
-    const targets = schedule.animalGroupId
-      ? data.animalGroups
-          .filter((group) => group.id === schedule.animalGroupId)
-          .map((group) => ({ id: group.id, name: group.name, groupId: group.id, animalId: null, birthDate: null }))
-      : [
-          ...data.animals
-            .filter((animal) =>
-              animal.status === "ACTIVE" &&
-              animal.species.toLocaleLowerCase() === schedule.species.toLocaleLowerCase() &&
-              (!schedule.breed || animal.breed?.toLocaleLowerCase() === schedule.breed.toLocaleLowerCase()),
-            )
-            .map((animal) => ({
-              id: animal.id,
-              name: animal.tagNumber,
-              groupId: null,
-              animalId: animal.id,
-              birthDate: animal.birthDate,
-            })),
-          ...(schedule.firstDueAt
-            ? data.animalGroups
-                .filter((group) => group.species.toLocaleLowerCase() === schedule.species.toLocaleLowerCase())
-                .map((group) => ({
-                  id: group.id,
-                  name: group.name,
-                  groupId: group.id,
-                  animalId: null,
-                  birthDate: null,
-                }))
-            : []),
-        ];
-    return targets.map((target) => {
-      const lastDose = schedule.records
-        .filter((record) =>
-          target.animalId
-            ? record.animalId === target.animalId
-            : record.animalGroupId === target.groupId,
-        )
-        .sort((a, b) => new Date(b.administeredAt ?? 0).getTime() - new Date(a.administeredAt ?? 0).getTime())[0];
-      let firstDue = schedule.firstDueAt ? new Date(schedule.firstDueAt) : null;
-      if (!firstDue && schedule.ageDays !== null && target.birthDate) {
-        firstDue = new Date(new Date(target.birthDate).getTime() + schedule.ageDays * 86_400_000);
-      }
-      const dueAt = lastDose
-        ? schedule.repeatEveryDays
-          ? new Date(new Date(lastDose.administeredAt ?? 0).getTime() + schedule.repeatEveryDays * 86_400_000)
-          : null
-        : firstDue;
-      return {
-        id: `${schedule.id}:${target.id}`,
-        title: schedule.title,
-        productName: schedule.productName,
-        targetName: target.name,
-        dueAt: dueAt?.toISOString() ?? null,
-        needsBirthDate: !dueAt && !lastDose && schedule.ageDays !== null && !target.birthDate,
-        overdue: dueAt ? dueAt.getTime() < nowMs : false,
-        complete: Boolean(lastDose && !schedule.repeatEveryDays),
-      };
-    });
-  });
+  const scheduleReminders = useMemo(
+    () => data.animalVaccinationSchedules.flatMap((schedule) => {
+      const targets = schedule.animalGroupId
+        ? data.animalGroups
+            .filter((group) => group.id === schedule.animalGroupId)
+            .map((group) => ({ id: group.id, name: group.name, groupId: group.id, animalId: null, birthDate: null }))
+        : [
+            ...data.animals
+              .filter((animal) =>
+                animal.status === "ACTIVE" &&
+                animal.species.toLocaleLowerCase() === schedule.species.toLocaleLowerCase() &&
+                (!schedule.breed || animal.breed?.toLocaleLowerCase() === schedule.breed.toLocaleLowerCase()),
+              )
+              .map((animal) => ({
+                id: animal.id,
+                name: animal.tagNumber,
+                groupId: null,
+                animalId: animal.id,
+                birthDate: animal.birthDate,
+              })),
+            ...(schedule.firstDueAt
+              ? data.animalGroups
+                  .filter((group) => group.species.toLocaleLowerCase() === schedule.species.toLocaleLowerCase())
+                  .map((group) => ({
+                    id: group.id,
+                    name: group.name,
+                    groupId: group.id,
+                    animalId: null,
+                    birthDate: null,
+                  }))
+              : []),
+          ];
+      return targets.map((target) => {
+        const lastDose = schedule.records
+          .filter((record) =>
+            target.animalId
+              ? record.animalId === target.animalId
+              : record.animalGroupId === target.groupId,
+          )
+          .sort((a, b) => new Date(b.administeredAt ?? 0).getTime() - new Date(a.administeredAt ?? 0).getTime())[0];
+        let firstDue = schedule.firstDueAt ? new Date(schedule.firstDueAt) : null;
+        if (!firstDue && schedule.ageDays !== null && target.birthDate) {
+          firstDue = new Date(new Date(target.birthDate).getTime() + schedule.ageDays * 86_400_000);
+        }
+        const dueAt = lastDose
+          ? schedule.repeatEveryDays
+            ? new Date(new Date(lastDose.administeredAt ?? 0).getTime() + schedule.repeatEveryDays * 86_400_000)
+            : null
+          : firstDue;
+        return {
+          id: `${schedule.id}:${target.id}`,
+          title: schedule.title,
+          productName: schedule.productName,
+          targetName: target.name,
+          dueAt: dueAt?.toISOString() ?? null,
+          needsBirthDate: !dueAt && !lastDose && schedule.ageDays !== null && !target.birthDate,
+          overdue: dueAt ? dueAt.getTime() < nowMs : false,
+          complete: Boolean(lastDose && !schedule.repeatEveryDays),
+        };
+      });
+    }),
+    [data.animalVaccinationSchedules, data.animalGroups, data.animals, nowMs],
+  );
   const healthTypeLabel = (type: string) => type.toLowerCase().replaceAll("_", " ");
   const recentThreshold = nowMs - 30 * 86_400_000;
   const recentEvents = eventRows.filter((event) =>
@@ -389,6 +472,118 @@ export function AnimalSection({
     receivable: totals.receivable + Math.max(0, row.sales - row.amountReceived),
     investment: totals.investment + row.investment,
   }), { sales: 0, directCosts: 0, capitalCosts: 0, receivable: 0, investment: 0 });
+  const activeAnimalCount = data.animals.filter((animal) => animal.status === "ACTIVE").length +
+    groupsWithCounts.filter((group) => group.trackingMode === "HEAD_COUNT")
+      .reduce((sum, group) => sum + group.currentCount, 0);
+  const overdueVaccinations = scheduleReminders.filter((reminder) => reminder.overdue && !reminder.complete).length;
+  const openHealthCases = data.animalHealthCases.filter((healthCase) => !healthCase.resolvedAt).length;
+  const monthlySales = data.animalMonthEconomics.sales;
+  const monthlyCosts = data.animalMonthEconomics.allocatedCosts;
+  const monthlyReceived = data.animalMonthEconomics.amountReceived;
+  const animalOverviewGroups: Array<{ title: string; metrics: OverviewMetric[] }> = [
+    {
+      title: sw ? "Kundi na matukio" : "Herd and activity",
+      metrics: [
+        { label: sw ? "Mifugo hai" : "Active animals", value: number(activeAnimalCount, 0), hasData: activeAnimalCount > 0 },
+        { label: sw ? "Waliozaliwa siku 30" : "Births · last 30 days", value: number(recentBirths, 0), hasData: recentBirths > 0 },
+        { label: sw ? "Vifo/kuondolewa siku 30" : "Deaths/culls · last 30 days", value: number(recentLosses, 0), hasData: recentLosses > 0 },
+      ],
+    },
+    {
+      title: sw ? "Uzalishaji" : "Production",
+      metrics: [
+        {
+          label: sw ? "Maziwa yaliyorekodiwa · siku 30" : "Recorded milk · last 30 days",
+          value: number(recentMilkEggs.filter((record) => record.type === "MILK").reduce((sum, record) => sum + (record.quantity ?? 0), 0)),
+          hasData: recentMilkEggs.some((record) => record.type === "MILK" && (record.quantity ?? 0) > 0),
+        },
+        {
+          label: sw ? "Mayai yaliyorekodiwa · siku 30" : "Recorded eggs · last 30 days",
+          value: number(recentMilkEggs.filter((record) => record.type === "EGGS").reduce((sum, record) => sum + (record.quantity ?? 0), 0)),
+          hasData: recentMilkEggs.some((record) => record.type === "EGGS" && (record.quantity ?? 0) > 0),
+        },
+      ],
+    },
+    {
+      title: sw ? "Afya na chakula" : "Health and feed",
+      metrics: [
+        { label: sw ? "Chanjo zilizochelewa" : "Overdue vaccination reminders", value: number(overdueVaccinations, 0), hasData: overdueVaccinations > 0 },
+        { label: sw ? "Matukio ya uzazi siku 30 zijazo" : "Expected births · next 30 days", value: number(upcomingBirths.length, 0), hasData: upcomingBirths.length > 0 },
+        { label: sw ? "Kesi za afya zilizo wazi" : "Open health cases", value: number(openHealthCases, 0), hasData: openHealthCases > 0 },
+        {
+          label: sw ? "Siku za chakula zilizobaki (makadirio)" : "Feed days remaining (estimate)",
+          value: minimumFeedDaysRemaining === null ? "" : number(minimumFeedDaysRemaining),
+          hasData: minimumFeedDaysRemaining !== null,
+        },
+        { label: sw ? "Vipindi vya kusubiri vinavyoendelea" : "Active withdrawal periods", value: number(activeWithdrawalRecords.length, 0), hasData: activeWithdrawalRecords.length > 0 },
+      ],
+    },
+    ...(isOwner ? [{
+      title: sw ? "Fedha na mipango" : "Finances and planning",
+      metrics: [
+        {
+          label: sw ? "Mauzo mwezi huu" : "Sales this month",
+          value: `${number(monthlySales)} ${data.farm.currency}`,
+          hasData: monthlySales > 0,
+        },
+        {
+          label: sw ? "Malipo yaliyorekodiwa mwezi huu" : "Amount received this month",
+          value: `${number(monthlyReceived)} ${data.farm.currency}`,
+          hasData: monthlySales > 0,
+        },
+        {
+          label: sw ? "Gharama zilizogawiwa mwezi huu" : "Allocated costs this month",
+          value: `${number(monthlyCosts)} ${data.farm.currency}`,
+          hasData: monthlyCosts > 0,
+        },
+        {
+          label: sw ? "Mchango uliorekodiwa kabla ya mtaji" : "Recorded contribution before capital",
+          value: `${number(monthlySales - monthlyCosts)} ${data.farm.currency}`,
+          hasData: monthlySales > 0 || monthlyCosts > 0,
+        },
+        {
+          label: sw ? "Mauzo yaliyorekodiwa (jumla)" : "Recorded sales (all time)",
+          value: `${number(economicsTotals.sales)} ${data.farm.currency}`,
+          hasData: economicsTotals.sales > 0,
+        },
+        {
+          label: sw ? "Malipo yaliyorekodiwa" : "Amount received (recorded)",
+          value: `${number(economicsTotals.sales - economicsTotals.receivable)} ${data.farm.currency}`,
+          hasData: economicsTotals.sales > 0,
+        },
+        {
+          label: sw ? "Salio linalodaiwa" : "Outstanding receivable",
+          value: `${number(economicsTotals.receivable)} ${data.farm.currency}`,
+          hasData: economicsTotals.receivable > 0,
+        },
+        {
+          label: sw ? "Gharama za moja kwa moja zilizogawiwa" : "Allocated direct costs",
+          value: `${number(economicsTotals.directCosts)} ${data.farm.currency}`,
+          hasData: economicsTotals.directCosts > 0,
+        },
+        {
+          label: sw ? "Uchakavu wa mtaji uliokadiriwa" : "Estimated capital cost to date",
+          value: `${number(economicsTotals.capitalCosts)} ${data.farm.currency}`,
+          hasData: economicsTotals.capitalCosts > 0,
+        },
+        {
+          label: sw ? "Mauzo ukilinganisha na gharama zilizorekodiwa" : "Recorded contribution after costs",
+          value: `${number(economicsTotals.sales - economicsTotals.directCosts - economicsTotals.capitalCosts)} ${data.farm.currency}`,
+          hasData: economicsTotals.sales > 0 || economicsTotals.directCosts > 0 || economicsTotals.capitalCosts > 0,
+        },
+        {
+          label: sw ? "Mtaji wa mifugo uliosajiliwa" : "Registered animal investment",
+          value: `${number(economicsTotals.investment)} ${data.farm.currency}`,
+          hasData: economicsTotals.investment > 0,
+        },
+        {
+          label: sw ? "Makadirio ya mtaji kwa mwezi" : "Estimated capital cost / month",
+          value: `${number(monthlyCapitalEstimate)} ${data.farm.currency}`,
+          hasData: monthlyCapitalEstimate > 0,
+        },
+      ],
+    }] : []),
+  ];
   const forecastWindow = data.animalSalesForecasts.filter((forecast) =>
     forecast.plannedFor && new Date(forecast.plannedFor).getTime() <= nowMs + 90 * 86_400_000,
   );
@@ -407,55 +602,35 @@ export function AnimalSection({
         </div>
       </div>
 
-      <section className="panel data-panel">
+      {activeSection === "overview" && <section className="panel data-panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Muhtasari na mpango wa mifugo" : "Animal dashboard and planning"}</h3>
             <p>{sw ? "Takwimu zinatokana na rekodi za shamba; gharama za mstari wa bidhaa hujumuisha mgao uliowekwa pekee." : "Figures come from farm records; product-line costs include only expenses explicitly allocated to that line."}</p>
           </div>
         </div>
-        <div className="plan-kpi-grid">
-          <div className="plan-kpi"><span>{sw ? "Mifugo hai" : "Active animals"}</span><strong>{number(data.animals.filter((animal) => animal.status === "ACTIVE").length + groupsWithCounts.filter((group) => group.trackingMode === "HEAD_COUNT").reduce((sum, group) => sum + group.currentCount, 0), 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Waliozaliwa siku 30" : "Births · last 30 days"}</span><strong>{number(recentBirths, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Vifo/kuondolewa siku 30" : "Deaths/culls · last 30 days"}</span><strong>{number(recentLosses, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Maziwa yaliyorekodiwa · siku 30" : "Recorded milk · last 30 days"}</span><strong>{number(recentMilkEggs.filter((record) => record.type === "MILK").reduce((sum, record) => sum + (record.quantity ?? 0), 0))}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Mayai yaliyorekodiwa · siku 30" : "Recorded eggs · last 30 days"}</span><strong>{number(recentMilkEggs.filter((record) => record.type === "EGGS").reduce((sum, record) => sum + (record.quantity ?? 0), 0))}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Chanjo zilizochelewa" : "Overdue vaccination reminders"}</span><strong>{number(scheduleReminders.filter((reminder) => reminder.overdue && !reminder.complete).length, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Matukio ya uzazi siku 30 zijazo" : "Expected births · next 30 days"}</span><strong>{number(upcomingBirths.length, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Kesi za afya zilizo wazi" : "Open health cases"}</span><strong>{number(data.animalHealthCases.filter((healthCase) => !healthCase.resolvedAt).length, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Siku za chakula zilizobaki (makadirio)" : "Feed days remaining (estimate)"}</span><strong>{minimumFeedDaysRemaining === null ? "—" : number(minimumFeedDaysRemaining)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Vipindi vya kusubiri vinavyoendelea" : "Active withdrawal periods"}</span><strong>{number(activeWithdrawalRecords.length, 0)}</strong></div>
-          <div className="plan-kpi"><span>{sw ? "Makadirio ya mtaji kwa mwezi" : "Estimated capital cost / month"}</span><strong>{number(monthlyCapitalEstimate)} {data.farm.currency}</strong></div>
+        <div className="animal-overview-groups">
+          {animalOverviewGroups.map((group) => (
+            <AnimalOverviewGroup
+              key={group.title}
+              title={group.title}
+              metrics={group.metrics}
+              emptyLabel={sw ? "Hakuna taarifa zilizorekodiwa bado" : "No records yet"}
+              countLabel={(count) => sw ? `Vipimo ${count}` : `${count} ${count === 1 ? "metric" : "metrics"}`}
+            />
+          ))}
         </div>
-        {isOwner && (
-          <>
-            <div className="plan-kpi-grid">
-              <div className="plan-kpi"><span>{sw ? "Mauzo mwezi huu" : "Sales this month"}</span><strong>{number(data.animalMonthEconomics.sales)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Malipo yaliyorekodiwa mwezi huu" : "Amount received this month"}</span><strong>{number(data.animalMonthEconomics.amountReceived)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Gharama zilizogawiwa mwezi huu" : "Allocated costs this month"}</span><strong>{number(data.animalMonthEconomics.allocatedCosts)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Mchango uliorekodiwa kabla ya mtaji" : "Recorded contribution before capital"}</span><strong>{number(data.animalMonthEconomics.sales - data.animalMonthEconomics.allocatedCosts)} {data.farm.currency}</strong></div>
-            </div>
-            <div className="plan-kpi-grid">
-              <div className="plan-kpi"><span>{sw ? "Mauzo yaliyorekodiwa (jumla)" : "Recorded sales (all time)"}</span><strong>{number(economicsTotals.sales)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Malipo yaliyorekodiwa" : "Amount received (recorded)"}</span><strong>{number(economicsTotals.sales - economicsTotals.receivable)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Salio linalodaiwa" : "Outstanding receivable"}</span><strong>{number(economicsTotals.receivable)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Gharama za moja kwa moja zilizogawiwa" : "Allocated direct costs"}</span><strong>{number(economicsTotals.directCosts)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Uchakavu wa mtaji uliokadiriwa" : "Estimated capital cost to date"}</span><strong>{number(economicsTotals.capitalCosts)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Mauzo ukilinganisha na gharama zilizorekodiwa" : "Recorded contribution after costs"}</span><strong>{number(economicsTotals.sales - economicsTotals.directCosts - economicsTotals.capitalCosts)} {data.farm.currency}</strong></div>
-              <div className="plan-kpi"><span>{sw ? "Mtaji wa mifugo uliosajiliwa" : "Registered animal investment"}</span><strong>{number(economicsTotals.investment)} {data.farm.currency}</strong></div>
-            </div>
-            <p className="field-help">{sw ? "Thamani za uchakavu ni makadirio ya mipango ya mstari mnyoofu tu, si ushauri wa uhasibu." : "Straight-line useful-life amounts are planning estimates only, not accounting advice."}</p>
-          </>
-        )}
-      </section>
+        {isOwner && <p className="field-help">{sw ? "Thamani za uchakavu ni makadirio ya mipango ya mstari mnyoofu tu, si ushauri wa uhasibu." : "Straight-line useful-life amounts are planning estimates only, not accounting advice."}</p>}
+      </section>}
 
-      {isOwner && <section className="panel">
+      {activeSection === "income" && isOwner && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Mauzo ya bidhaa za mifugo" : "Animal product sales"}</h3>
             <p>{sw ? "Hifadhi mapato, kiasi kilichopokelewa na salio bila kuchakata malipo." : "Record income, amount received and balance due; no payment is processed by the app."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Rekodi mauzo ya mifugo" : "Record animal product sale"}>
         <ActionForm action={recordAnimalSaleAction} submitLabel={sw ? "Rekodi mauzo" : "Record sale"} className="form-grid">
           <FormSelect label={sw ? "Mstari wa bidhaa" : "Product line"} name="productLine" options={animalProductLines.map((line) => ({ value: line, label: productLineLabel(line, locale) }))} />
           <FormSelect label={sw ? "Mnyama (hiari; lazima kwa mnyama hai)" : "Animal (optional; required for live-animal sales)"} name="animalId" required={false} options={animalOptions.filter((option) => data.animals.find((animal) => animal.id === option.value)?.status === "ACTIVE")} />
@@ -474,12 +649,13 @@ export function AnimalSection({
           <FormField label={sw ? "Rejea ya malipo (hiari)" : "Payment reference (optional)"} name="paymentReference" required={false} />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         <div className="table-scroll">
           {productEconomics.length > 0 && <table><thead><tr><th>{sw ? "Bidhaa" : "Product line"}</th><th>{sw ? "Kiasi kilichouzwa" : "Quantity sold"}</th><th>{sw ? "Mauzo" : "Sales"}</th><th>{sw ? "Gharama za moja kwa moja" : "Direct costs"}</th><th>{sw ? "Mtaji uliokadiriwa" : "Estimated capital cost"}</th><th>{sw ? "Margin iliyorekodiwa" : "Recorded margin"}</th><th>{sw ? "Salio" : "Receivable"}</th></tr></thead><tbody>
             {productEconomics.map((row) => <tr key={row.productLine}><td>{productLineLabel(row.productLine, locale)}</td><td>{number(row.quantitySold)}</td><td>{number(row.sales)} {data.farm.currency}</td><td>{number(row.costs)} {data.farm.currency}</td><td>{number(row.capitalCost)} {data.farm.currency}</td><td>{number(row.sales - row.costs - row.capitalCost)} {data.farm.currency}</td><td>{number(Math.max(0, row.sales - row.amountReceived))} {data.farm.currency}</td></tr>)}
           </tbody></table>}
           {data.animalSales.length > 0 ? <table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Bidhaa" : "Product"}</th><th>{sw ? "Mnyama/kikundi" : "Animal/group"}</th><th>{sw ? "Kiasi" : "Quantity"}</th><th>{sw ? "Jumla" : "Total"}</th><th>{sw ? "Imepokelewa" : "Received"}</th><th>{sw ? "Inayodaiwa" : "Outstanding"}</th><th>{sw ? "Malipo" : "Payment history"}</th><th>{sw ? "Rekodi malipo" : "Record payment"}</th></tr></thead><tbody>
-            {data.animalSales.map((sale) => <tr key={sale.id}><td>{date(sale.soldAt)}</td><td>{productLineLabel(sale.productLine, locale)}</td><td>{sale.animalName ?? "—"}</td><td>{number(sale.quantity)} {sale.unit}</td><td>{number(sale.totalAmount)} {sale.currency}</td><td>{number(sale.amountReceived)} {sale.currency}</td><td>{number(Math.max(0, sale.totalAmount - sale.amountReceived))} {sale.currency}</td><td>{sale.payments.map((payment) => `${date(payment.receivedAt)}: ${number(payment.amount)}`).join(", ") || "—"}</td><td>{sale.totalAmount > sale.amountReceived && <ActionForm action={recordAnimalSalePaymentAction} submitLabel={sw ? "Ongeza" : "Add payment"} className="animal-row-action">
+            {data.animalSales.map((sale) => <tr key={sale.id}><td>{date(sale.soldAt)}</td><td>{productLineLabel(sale.productLine, locale)}</td><td>{sale.animalName ?? "—"}</td><td>{number(sale.quantity)} {sale.unit}</td><td>{number(sale.totalAmount)} {sale.currency}</td><td>{number(sale.amountReceived)} {sale.currency}</td><td>{number(Math.max(0, sale.totalAmount - sale.amountReceived))} {sale.currency}</td><td>{sale.payments.map((payment) => `${date(payment.receivedAt)}: ${number(payment.amount)}`).join(", ") || "—"}</td><td>{sale.totalAmount > sale.amountReceived && <AddDisclosure title={sw ? "Ongeza malipo" : "Add payment"}><ActionForm action={recordAnimalSalePaymentAction} submitLabel={sw ? "Ongeza" : "Add payment"} className="animal-row-action">
               <input name="saleId" type="hidden" value={sale.id} />
               <FormField label={sw ? "Kiasi" : "Amount"} name="amount" type="number" min="0.01" step="0.01" required />
               <FormField label={sw ? "Tarehe" : "Date"} name="receivedAt" type="date" />
@@ -489,18 +665,19 @@ export function AnimalSection({
                 { value: "MOBILE_MONEY", label: sw ? "Pesa kwa simu" : "Mobile money" },
               ]} />
               <FormField label={sw ? "Rejea" : "Reference"} name="reference" required={false} />
-            </ActionForm>}</td></tr>)}
+            </ActionForm></AddDisclosure>}</td></tr>)}
           </tbody></table> : <p className="field-help">{sw ? "Bado hakuna mauzo yaliyorekodiwa." : "No animal sales recorded yet."}</p>}
         </div>
       </section>}
 
-      {isOwner && <section className="panel">
+      {activeSection === "income" && isOwner && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Mpango wa mauzo ya mifugo" : "Animal sales forecast"}</h3>
             <p>{sw ? "Makadirio haya ni mpango uliowekwa na shamba, si mauzo halisi au kigezo cha nje." : "These are farm-entered forecasts, not actual sales or external benchmarks."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Ongeza utabiri wa mauzo" : "Add sales forecast"}>
         <ActionForm action={createAnimalSalesForecastAction} submitLabel={sw ? "Hifadhi utabiri" : "Save forecast"} className="form-grid">
           <FormSelect label={sw ? "Mstari wa bidhaa" : "Product line"} name="productLine" options={animalProductLines.map((line) => ({ value: line, label: productLineLabel(line, locale) }))} />
           <FormField label={sw ? "Tarehe iliyopangwa" : "Planned date"} name="plannedFor" type="date" required />
@@ -509,12 +686,13 @@ export function AnimalSection({
           <FormField label={sw ? `Bei inayotarajiwa (${data.farm.currency})` : `Expected unit price (${data.farm.currency})`} name="unitPrice" type="number" min="0" step="0.01" required={false} />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         {forecastWindow.length > 0 ? <div className="table-scroll"><table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Bidhaa" : "Product line"}</th><th>{sw ? "Kiasi" : "Quantity"}</th><th>{sw ? "Mapato yanayokadiriwa" : "Indicative revenue"}</th></tr></thead><tbody>
           {forecastWindow.map((forecast) => <tr key={forecast.id}><td>{date(forecast.plannedFor)}</td><td>{productLineLabel(forecast.productLine, locale)}</td><td>{number(forecast.quantity)} {forecast.unit}</td><td>{forecast.unitPrice === null ? "—" : `${number(forecast.quantity * forecast.unitPrice)} ${forecast.currency}`}</td></tr>)}
         </tbody></table></div> : <p className="field-help">{sw ? "Hakuna utabiri wa mauzo ndani ya siku 90." : "No sales forecasts are scheduled within the next 90 days."}</p>}
       </section>}
 
-      {isOwner && animalCapitalAssets.length > 0 && <section className="panel">
+      {activeSection === "income" && isOwner && animalCapitalAssets.length > 0 && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Uwekezaji wa mtaji wa mifugo" : "Animal capital investments"}</h3>
@@ -531,7 +709,7 @@ export function AnimalSection({
         </tbody></table></div>
       </section>}
 
-      <section className="panel">
+      {activeSection === "herd" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Vikundi na makundi" : "Groups and batches"}</h3>
@@ -539,6 +717,7 @@ export function AnimalSection({
           </div>
         </div>
         {isOwner && (
+          <AddDisclosure title={sw ? "Ongeza kikundi cha mifugo" : "Add animal group"}>
           <ActionForm action={createAnimalGroupAction} submitLabel={sw ? "Hifadhi kikundi" : "Save group"} className="form-grid">
             <FormField label={sw ? "Jina la kikundi" : "Group name"} name="name" required />
             <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" placeholder={sw ? "Ingiza aina kutoka shambani" : "Enter farm's species"} required />
@@ -559,6 +738,7 @@ export function AnimalSection({
             </p>
             <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
           </ActionForm>
+          </AddDisclosure>
         )}
         {groupsWithCounts.length > 0 ? (
           <div className="table-scroll">
@@ -588,9 +768,9 @@ export function AnimalSection({
             </table>
           </div>
         ) : <p className="field-help">{sw ? "Bado hakuna vikundi vilivyosajiliwa." : "No animal groups registered yet."}</p>}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "breeding" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Jenetiki na uzalishaji" : "Genetics and breeding"}</h3>
@@ -601,6 +781,7 @@ export function AnimalSection({
         </div>
         {isOwner && (
           <div className="form-grid">
+            <AddDisclosure title={sw ? "Ongeza taarifa za spishi" : "Add species details"}>
             <ActionForm action={saveAnimalSpeciesProfileAction} submitLabel={sw ? "Hifadhi taarifa za spishi" : "Save species reference"} className="form-grid field-wide">
               <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
               <FormField label={sw ? "Siku za ujauzito (si lazima)" : "Gestation days (optional)"} name="gestationDays" type="number" min="1" max="1000" step="1" required={false} />
@@ -608,6 +789,8 @@ export function AnimalSection({
               <FormField label={sw ? "Tarehe ya chanzo" : "Source date"} name="sourceDate" type="date" required={false} />
               <FormField label={sw ? "Maelezo ya chanzo" : "Source note"} name="sourceNote" required={false} />
             </ActionForm>
+            </AddDisclosure>
+            <AddDisclosure title={sw ? "Ongeza aina ya uzalishaji" : "Add breed"}>
             <ActionForm action={createAnimalBreedAction} submitLabel={sw ? "Sajili aina ya uzalishaji" : "Register breed"} className="form-grid field-wide">
               <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
               <FormField label={sw ? "Jina la uzazi" : "Breed name"} name="name" required />
@@ -616,7 +799,9 @@ export function AnimalSection({
                 label: purposeLabel(purpose, locale),
               }))} />
             </ActionForm>
+            </AddDisclosure>
             {data.animalBreeds.length > 0 && (
+              <AddDisclosure title={sw ? "Ongeza kigezo cha uzazi" : "Add breed benchmark"}>
               <ActionForm action={createAnimalBreedBenchmarkAction} submitLabel={sw ? "Hifadhi kigezo chenye chanzo" : "Save sourced breed benchmark"} className="form-grid field-wide">
                 <FormSelect label={sw ? "Uzazi" : "Breed"} name="breedId" options={data.animalBreeds.map((breed) => ({ value: breed.id, label: `${breed.name} · ${breed.species}` }))} />
                 <FormField label={sw ? "Sifa/kigezo" : "Trait"} name="traitName" required />
@@ -626,6 +811,7 @@ export function AnimalSection({
                 <FormField label={sw ? "Tarehe ya chanzo" : "Source date"} name="sourceDate" type="date" required />
                 <FormField label={sw ? "Maelezo ya chanzo" : "Source note"} name="sourceNote" required />
               </ActionForm>
+              </AddDisclosure>
             )}
           </div>
         )}
@@ -655,6 +841,7 @@ export function AnimalSection({
             </tr>
           ))}</tbody></table></div>
         )}
+        <AddDisclosure title={sw ? "Rekodi sifa ya mnyama" : "Record animal trait"}>
         <ActionForm
           action={recordAnimalTraitAction}
           submitLabel={sw ? "Rekodi sifa" : "Record animal trait"}
@@ -671,6 +858,7 @@ export function AnimalSection({
           <FormField label={sw ? "Tarehe" : "Date"} name="recordedAt" type="date" />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         {data.animalTraitRecords.length > 0 && (
           <div className="table-scroll"><table><thead><tr>
             <th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Mnyama" : "Animal"}</th>
@@ -682,6 +870,7 @@ export function AnimalSection({
             </tr>
           ))}</tbody></table></div>
         )}
+        <AddDisclosure title={sw ? "Ongeza rekodi ya uzalishaji" : "Add breeding record"}>
         <ActionForm
           action={recordAnimalBreedingAction}
           submitLabel={sw ? "Hifadhi tukio la uzalishaji" : "Save breeding record"}
@@ -700,6 +889,7 @@ export function AnimalSection({
           <FormField label={sw ? "Tarehe ya kupandisha (inaweza kuwa ya baadaye kwa mpango)" : "Service date (future dates can be planned)"} name="servedAt" type="date" required />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         {data.animalBreedingRecords.length > 0 ? (
           <div className="table-scroll"><table><thead><tr>
             <th>{sw ? "Tarehe" : "Service date"}</th><th>{sw ? "Mama / baba" : "Dam / sire"}</th>
@@ -718,6 +908,7 @@ export function AnimalSection({
                   related ? (sw ? "Tahadhari: ukoo wa karibu" : "Warning: close-relative mating") : null,
                 ].filter(Boolean).join(" · ") || "—"}</td>
                 <td>{!record.birthAt && (
+                  <AddDisclosure title={sw ? "Sasisha maendeleo ya uzazi" : "Update breeding progress"}>
                   <ActionForm action={updateAnimalBreedingProgressAction} submitLabel={sw ? "Hifadhi maendeleo" : "Save progress"} className="animal-row-action">
                     <input name="id" type="hidden" value={record.id} />
                     <FormField label={sw ? "Tarehe ya ukaguzi wa ujauzito" : "Pregnancy check date"} name="pregnancyCheckedAt" type="date" defaultValue={record.pregnancyCheckedAt?.slice(0, 10)} required={false} />
@@ -725,14 +916,15 @@ export function AnimalSection({
                     <FormField label={sw ? "Tarehe ya kuzaliwa" : "Birth date"} name="birthAt" type="date" required={false} />
                     <FormSelect label={sw ? "Matokeo ya kuzaliwa" : "Birth outcome"} name="birthOutcome" required={false} options={birthOutcomes.map((outcome) => ({ value: outcome, label: outcome.toLowerCase() }))} />
                   </ActionForm>
+                  </AddDisclosure>
                 )}</td>
               </tr>
             );
           })}</tbody></table></div>
         ) : <p className="field-help">{sw ? "Bado hakuna matukio ya uzalishaji." : "No breeding records yet."}</p>}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "herd" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Wanyama wenye alama" : "Tagged animals"}</h3>
@@ -740,8 +932,11 @@ export function AnimalSection({
           </div>
         </div>
         {isOwner && (
+          <>
+          <AddDisclosure title={sw ? "Ongeza mnyama mmoja" : "Add one animal"}>
           <ActionForm action={createAnimalAction} submitLabel={sw ? "Sajili mnyama" : "Register animal"} className="form-grid">
             <FormField label={sw ? "Namba ya alama" : "Tag number"} name="tagNumber" required />
+            <FormField label={sw ? "Jina (hiari)" : "Name (optional)"} name="name" required={false} />
             <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
             <FormField label={sw ? "Aina ya uzalishaji" : "Breed"} name="breed" required={false} />
             <FormSelect
@@ -769,13 +964,24 @@ export function AnimalSection({
             <FormField label={sw ? "Chanzo (aliyezaliwa/aliyenunuliwa)" : "Source (born/bought)"} name="source" required={false} />
             {isOwner && <FormField label={sw ? `Bei ya ununuzi (${data.farm.currency}, ikiwa inanunuliwa)` : `Purchase price (${data.farm.currency}, if bought)`} name="purchasePrice" type="number" min="0" step="0.01" required={false} />}
             <FormField label={sw ? "Muuzaji" : "Seller"} name="seller" required={false} />
-            <FormSelect label={sw ? "Kikundi cha ufuatiliaji binafsi" : "Individual-tracking group"} name="groupId" options={groupOptions.filter((option) => data.animalGroups.find((group) => group.id === option.value)?.trackingMode === "INDIVIDUAL")} />
+            <FormSelect label={sw ? "Kikundi cha ufuatiliaji binafsi (hiari)" : "Individual-tracking group (optional)"} name="groupId" required={false} options={groupOptions.filter((option) => data.animalGroups.find((group) => group.id === option.value)?.trackingMode === "INDIVIDUAL")} />
           </ActionForm>
+          </AddDisclosure>
+          <AddDisclosure title={sw ? "Ingiza orodha ya alama" : "Import a tag list"}>
+            <ActionForm action={createAnimalsBulkAction} submitLabel={sw ? "Sajili wanyama wote" : "Register animals"} className="form-grid">
+              <FormSelect label={sw ? "Kikundi cha ufuatiliaji binafsi (hiari)" : "Individual-tracking group (optional)"} name="groupId" required={false} options={groupOptions.filter((option) => data.animalGroups.find((group) => group.id === option.value)?.trackingMode === "INDIVIDUAL")} />
+              <FormField label={sw ? "Aina ya mnyama" : "Species"} name="species" required />
+              <FormTextArea label={sw ? "Namba za alama (mstari, koma au semicolon moja kwa kila namba)" : "Tag numbers (one per line, comma, or semicolon)"} name="tags" required rows={5} />
+              <p className="field-help field-wide">{sw ? "Hadi wanyama 500 kwa mara moja. Majina yanaweza kuongezwa baadaye kwa usajili wa mnyama mmoja." : "Up to 500 animals at once. Add names later by editing an individual animal record."}</p>
+            </ActionForm>
+          </AddDisclosure>
+          </>
         )}
         {data.animals.length > 0 ? (
           <div className="table-scroll">
             <table>
               <thead><tr>
+                <th>{sw ? "Jina" : "Name"}</th>
                 <th>{sw ? "Alama" : "Tag"}</th>
                 <th>{sw ? "Aina" : "Species"}</th>
                 <th>{sw ? "Uzazi" : "Breed"}</th>
@@ -789,6 +995,7 @@ export function AnimalSection({
               </tr></thead>
               <tbody>{data.animals.map((animal) => (
                 <tr key={animal.id}>
+                  <td>{animal.name ?? "—"}</td>
                   <td>{animal.tagNumber}</td>
                   <td>{animal.species}</td>
                   <td>{animal.breedName ?? "—"}</td>
@@ -811,15 +1018,16 @@ export function AnimalSection({
             </table>
           </div>
         ) : <p className="field-help">{sw ? "Bado hakuna wanyama binafsi waliosajiliwa." : "No individual animals registered yet."}</p>}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "herd" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Matukio ya mifugo" : "Animal events"}</h3>
             <p>{sw ? "Mizani ya vikundi hubadilishwa na kuzaliwa, ununuzi, mauzo, vifo au kuondoa kundini." : "Group counts change with births, purchases, sales, deaths and culls."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Rekodi tukio la mifugo" : "Record an animal event"}>
         <ActionForm action={recordAnimalEventAction} submitLabel={sw ? "Rekodi tukio" : "Record event"} className="form-grid">
           <FormSelect label={sw ? "Kikundi cha idadi (chagua moja tu)" : "Head-count group (choose only one target)"} name="animalGroupId" required={false} options={headCountGroupOptions} />
           <FormSelect label={sw ? "Mnyama binafsi (chagua moja tu)" : "Individual animal (choose only one target)"} name="animalId" required={false} options={animalOptions} />
@@ -830,6 +1038,7 @@ export function AnimalSection({
           <FormField label={sw ? "Muuzaji (kwa ununuzi)" : "Seller (for purchases)"} name="seller" required={false} />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         {eventRows.length > 0 && (
           <div className="table-scroll">
             <table>
@@ -854,16 +1063,58 @@ export function AnimalSection({
             </table>
           </div>
         )}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "feed" && <section className="panel">
         <div className="panel-header">
           <div>
-            <h3>{sw ? "Mpango wa chakula na akiba" : "Feed plan and stock"}</h3>
-            <p>{sw ? "Hesabu hutumia mgao ulioingizwa na mkulima; si pendekezo la lishe." : "Calculations use the farm-entered ration; they are not a nutrition recommendation."}</p>
+            <h3>{sw ? "Bidhaa za chakula na utabiri wa mahitaji" : "Feed products and demand forecast"}</h3>
+            <p>{sw ? "Rekodi maelezo na ubora wa chakula, kisha kadiria mahitaji kwa idadi ya wanyama na mgao uliowekwa na shamba." : "Record feed details and quality, then forecast needs from animal counts and farm-entered daily rations."}</p>
           </div>
         </div>
         {isOwner && (
+          <AddDisclosure title={sw ? "Ongeza bidhaa ya chakula" : "Add feed item"}>
+          <ActionForm action={createStockItemAction} submitLabel={sw ? "Hifadhi bidhaa" : "Save feed item"} className="form-grid">
+            <input name="category" type="hidden" value="FEED" />
+            <FormField label={sw ? "Jina la chakula" : "Feed name"} name="name" required />
+            <FormField label={sw ? "Kipimo cha akiba (mf. kg)" : "Stock unit (e.g. kg)"} name="unit" required />
+            <FormField label={sw ? "Kizingiti cha akiba ndogo" : "Low-stock threshold"} name="lowStockThreshold" type="number" min="0" step="any" required={false} />
+            <FormField label={sw ? "Protini ghafi (%)" : "Crude protein (%)"} name="crudeProteinPct" type="number" min="0" max="100" step="any" required={false} />
+            <FormField label={sw ? "Nyuzi ghafi (%)" : "Crude fiber (%)"} name="crudeFiberPct" type="number" min="0" max="100" step="any" required={false} />
+            <FormField label={sw ? "Thamani ya nishati" : "Energy value"} name="energyValue" type="number" min="0" step="any" required={false} />
+            <FormField label={sw ? "Kipimo cha nishati (mf. MJ/kg)" : "Energy unit (e.g. MJ/kg)"} name="energyUnit" required={false} />
+            <FormTextArea label={sw ? "Ubora/virutubisho na chanzo" : "Quality, nutrients and source notes"} name="qualityNotes" required={false} />
+            <FormTextArea label={sw ? "Maelekezo ya kuhifadhi" : "Storage instructions"} name="storageInstructions" required={false} />
+            <FormField label={sw ? "Muda wa kuhifadhi (siku)" : "Shelf life (days)"} name="shelfLifeDays" type="number" min="1" step="1" required={false} />
+            <FormField label={sw ? "Muda baada ya kufungua (siku)" : "After-opening life (days)"} name="openedLifeDays" type="number" min="1" step="1" required={false} />
+            <p className="field-help field-wide">{sw ? "Bidhaa mpya huanza na akiba sifuri. Rekodi ununuzi/kuingiza akiba kwenye sehemu ya Mazao → Pembejeo na akiba." : "New feed items start with zero stock. Record purchases or stock intake under Crops → Inputs & stock."}</p>
+          </ActionForm>
+          </AddDisclosure>
+        )}
+        {feedItems.length > 0 ? (
+          <div className="table-scroll"><table><thead><tr>
+            <th>{sw ? "Chakula" : "Feed"}</th><th>{sw ? "Akiba" : "Stock"}</th>
+            <th>{sw ? "Protini ghafi" : "Crude protein"}</th><th>{sw ? "Nyuzi ghafi" : "Crude fiber"}</th>
+            <th>{sw ? "Nishati" : "Energy"}</th><th>{sw ? "Muda wa kuhifadhi" : "Shelf life"}</th>
+            <th>{sw ? "Matumizi yaliyorekodiwa" : "Recorded intake"}</th>
+            <th>{sw ? "Uhifadhi/ubora" : "Storage / quality"}</th>
+          </tr></thead><tbody>{feedItems.map((item) => (
+            <tr key={item.id}>
+              <td>{item.name}</td><td>{number(item.balance)} {item.unit}</td>
+              <td>{item.crudeProteinPct === null ? "—" : `${number(item.crudeProteinPct)}%`}</td>
+              <td>{item.crudeFiberPct === null ? "—" : `${number(item.crudeFiberPct)}%`}</td>
+              <td>{item.energyValue === null ? "—" : `${number(item.energyValue)} ${item.energyUnit ?? ""}`}</td>
+              <td>{item.shelfLifeDays === null ? "—" : `${item.shelfLifeDays} ${sw ? "siku" : "days"}`}{item.openedLifeDays === null ? "" : ` · ${sw ? "baada ya kufungua" : "opened"}: ${item.openedLifeDays} ${sw ? "siku" : "days"}`}</td>
+              <td>{(() => {
+                const summary = data.animalFeedIntakeSummary.find((record) => record.feedItemId === item.id);
+                return summary ? `${number(summary.totalQuantity)} ${summary.unit} · ${summary.recordCount} ${sw ? "rekodi" : "entries"}` : "—";
+              })()}</td>
+              <td>{[item.storageInstructions, item.qualityNotes].filter(Boolean).join(" · ") || "—"}</td>
+            </tr>
+          ))}</tbody></table></div>
+        ) : <p className="field-help">{sw ? "Bado hakuna chakula kilichosajiliwa." : "No feed items registered yet."}</p>}
+        {isOwner && (
+          <AddDisclosure title={sw ? "Weka mgao wa kila siku kwa kikundi" : "Set a group's daily ration"}>
           <ActionForm action={saveFeedRationAction} submitLabel={sw ? "Hifadhi mgao" : "Save ration"} className="form-grid">
             <FormSelect label={sw ? "Kikundi" : "Group"} name="animalGroupId" options={groupOptions} />
             <FormSelect
@@ -873,6 +1124,7 @@ export function AnimalSection({
             />
             <FormField label={sw ? "Kiasi kwa mnyama kwa siku (kwa kipimo cha bidhaa)" : "Quantity per head per day (item unit)"} name="quantityPerHead" type="number" min="0.0001" step="any" required />
           </ActionForm>
+          </AddDisclosure>
         )}
         <label className="field field-compact">
           <span>{sw ? "Siku za kupanga" : "Planning days"}</span>
@@ -883,7 +1135,10 @@ export function AnimalSection({
             <table>
               <thead><tr>
                 <th>{sw ? "Kikundi na bidhaa" : "Group and item"}</th>
+                <th>{sw ? "Idadi × mgao wa kila siku" : "Head count × daily ration"}</th>
                 <th>{sw ? "Mahitaji ya mpango" : "Planned need"}</th>
+                <th>{sw ? "Protini ghafi inayokadiriwa" : "Estimated crude protein"}</th>
+                <th>{sw ? "Nyuzi ghafi zinazokadiriwa" : "Estimated crude fiber"}</th>
                 <th>{sw ? "Akiba" : "Stock"}</th>
                 <th>{sw ? "Upungufu" : "Shortfall"}</th>
                 <th>{sw ? "Siku zilizobaki kwa mgao huu" : "Days left at this ration"}</th>
@@ -891,7 +1146,10 @@ export function AnimalSection({
               <tbody>{feedPlans.map((plan) => (
                 <tr key={plan.ration.id}>
                   <td>{plan.group.name} · {plan.ration.itemName}</td>
+                  <td>{plan.group.currentCount} × {number(plan.ration.quantityPerHead)} {plan.ration.unit}/{sw ? "mnyama/siku" : "head/day"} · {number(plan.nutrition?.dailyFeedGroupKg ?? plan.group.currentCount * plan.ration.quantityPerHead)} {plan.nutrition ? "kg" : plan.ration.unit}/{sw ? "siku" : "day"}</td>
                   <td>{number(plan.plannedQuantity)} {plan.ration.unit}</td>
+                  <td>{plan.nutrition?.plannedCrudeProteinKg === null || plan.nutrition?.plannedCrudeProteinKg === undefined ? "—" : `${number(plan.nutrition.plannedCrudeProteinKg)} kg`}</td>
+                  <td>{plan.nutrition?.plannedCrudeFiberKg === null || plan.nutrition?.plannedCrudeFiberKg === undefined ? "—" : `${number(plan.nutrition.plannedCrudeFiberKg)} kg`}</td>
                   <td>{number(plan.stock)} {plan.ration.unit}</td>
                   <td>{number(plan.shortfall)} {plan.ration.unit}</td>
                   <td>{plan.daysRemaining === null ? "—" : number(plan.daysRemaining)}</td>
@@ -899,16 +1157,36 @@ export function AnimalSection({
               ))}</tbody>
             </table>
           </div>
-        ) : <p className="field-help">{sw ? "Ongeza bidhaa ya chakula ya aina FEED na mgao wa kikundi ili kuona mpango." : "Add a FEED stock item and a group ration to see the plan."}</p>}
-      </section>
+        ) : <p className="field-help">{sw ? "Weka mgao wa chakula kwa kikundi ili kuona utabiri." : "Set a feed ration for a group to see its demand forecast."}</p>}
+        {feedUseRecords.length > 0 && <div className="table-scroll">
+          <h4>{sw ? "Historia ya matumizi ya chakula" : "Feed intake history"}</h4>
+          <table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Chakula" : "Feed"}</th><th>{sw ? "Mnyama/kikundi" : "Animal/group"}</th><th>{sw ? "Kiasi kilichotolewa" : "Amount fed"}</th><th>{sw ? "Maelezo" : "Notes"}</th></tr></thead>
+            <tbody>{feedUseRecords.map((record) => <tr key={record.id}><td>{date(record.recordedAt)}</td><td>{record.feedItemName ?? "—"}</td><td>{record.animalName ? `${record.animalName} · ` : ""}{record.animalGroupName ?? record.animalTag ?? "—"}</td><td>{number(record.quantity ?? 0)} {record.unit ?? ""}</td><td>{record.notes ?? "—"}</td></tr>)}</tbody>
+          </table>
+        </div>}
+        {feedPerformanceRecords.length > 0 && <div className="table-scroll">
+          <h4>{sw ? "Vipimo vya utendaji vilivyounganishwa na chakula" : "Performance records linked to feed"}</h4>
+          <p className="field-help">{sw ? "Hivi ni vipimo vilivyorekodiwa pamoja na bidhaa; uhusiano pekee hauonyeshi kuwa chakula ndicho kilichosababisha matokeo." : "These are measurements recorded alongside a feed item; association alone does not establish that the feed caused the result."}</p>
+          <table><thead><tr><th>{sw ? "Tarehe" : "Date"}</th><th>{sw ? "Chakula" : "Feed"}</th><th>{sw ? "Mnyama/kikundi" : "Animal/group"}</th><th>{sw ? "Kipimo" : "Measure"}</th><th>{sw ? "Thamani" : "Value"}</th></tr></thead>
+            <tbody>{feedPerformanceRecords.map((record) => <tr key={record.id}><td>{date(record.recordedAt)}</td><td>{record.feedItemName ?? "—"}</td><td>{record.animalName ? `${record.animalName} · ` : ""}{record.animalGroupName ?? record.animalTag ?? "—"}</td><td>{healthTypeLabel(record.type)}</td><td>{number(record.quantity)} {record.unit}</td></tr>)}</tbody>
+          </table>
+        </div>}
+        {data.animalFeedPerformanceSummary.length > 0 && <div className="table-scroll">
+          <h4>{sw ? "Muhtasari wa kihistoria wa vipimo kwa chakula" : "Historical performance summary by feed"}</h4>
+          <table><thead><tr><th>{sw ? "Chakula" : "Feed"}</th><th>{sw ? "Kipimo" : "Measure"}</th><th>{sw ? "Wastani wa vipimo" : "Average recorded measure"}</th><th>{sw ? "Idadi ya vipimo" : "Measurements"}</th></tr></thead>
+            <tbody>{data.animalFeedPerformanceSummary.map((summary) => <tr key={`${summary.feedItemId}-${summary.type}-${summary.unit}`}><td>{summary.feedItemName}</td><td>{healthTypeLabel(summary.type)}</td><td>{summary.averageQuantity === null ? "—" : `${number(summary.averageQuantity)} ${summary.unit}`}</td><td>{summary.recordCount}</td></tr>)}</tbody>
+          </table>
+        </div>}
+      </section>}
 
-      <section className="panel">
+      {activeSection === "daily" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Kirekodi cha kila siku" : "Daily tracker"}</h3>
             <p>{sw ? "Rekodi chakula kilichotolewa, maji, mazao yaliyokusanywa au ukaguzi wa kumbukumbu. Ingizo la chakula hupunguza akiba." : "Record feed given, water, collected products or a health-check note. Feed entries deduct stock."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Rekodi matumizi ya kila siku" : "Record daily activity"}>
         <ActionForm
           action={recordAnimalDailyAction}
           submitLabel={sw ? "Hifadhi rekodi" : "Save daily record"}
@@ -926,6 +1204,7 @@ export function AnimalSection({
           <FormField label={sw ? "Tarehe" : "Date"} name="recordedAt" type="date" />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" placeholder={sw ? "Ukaguzi ni kumbukumbu tu, si utambuzi." : "A check is a record only, not a diagnosis."} />
         </ActionForm>
+        </AddDisclosure>
         {data.animalDailyRecords.length > 0 ? (
           <div className="table-scroll">
             <table>
@@ -944,7 +1223,7 @@ export function AnimalSection({
                 return (
                   <tr key={record.id}>
                     <td>{date(record.recordedAt)}</td>
-                    <td>{record.animalGroupName ?? record.animalTag ?? "—"}</td>
+                    <td>{record.animalName ? `${record.animalName} · ` : ""}{record.animalGroupName ?? record.animalTag ?? "—"}</td>
                     <td>{dailyLabel(record.type, locale)}{record.feedItemName ? ` · ${record.feedItemName}` : ""}</td>
                     <td>{record.quantity === null ? "—" : `${number(record.quantity)} ${record.unit ?? ""}`}</td>
                     <td>{hasOpenCase ? <span className="status-pill status-warning">{sw ? "Kesi wazi" : "Open case"}</span> : "—"}</td>
@@ -955,9 +1234,9 @@ export function AnimalSection({
             </table>
           </div>
         ) : <p className="field-help">{sw ? "Bado hakuna kumbukumbu za kila siku." : "No daily animal records yet."}</p>}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "health" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Afya, chanjo na dawa" : "Health, vaccination and medicine"}</h3>
@@ -965,6 +1244,7 @@ export function AnimalSection({
           </div>
         </div>
         {isOwner && (
+          <AddDisclosure title={sw ? "Ongeza bidhaa ya afya" : "Add health product"}>
           <ActionForm action={createAnimalHealthProductAction} submitLabel={sw ? "Ongeza bidhaa ya afya" : "Add health product"} className="form-grid">
             <FormField label={sw ? "Jina la chanjo/dawa" : "Vaccine or medicine name"} name="name" required />
             <FormSelect label={sw ? "Aina" : "Type"} name="type" options={[
@@ -989,6 +1269,7 @@ export function AnimalSection({
             {isOwner && <FormField label={`${sw ? "Gharama kwa dozi" : "Cost per dose"} (${data.farm.currency})`} name="costPerDose" type="number" min="0" step="any" required={false} />}
             <FormField label={sw ? "Siku za kusubiri kabla ya mazao" : "Withdrawal days before products"} name="withdrawalDays" type="number" min="0" max="3650" step="1" defaultValue="0" required />
           </ActionForm>
+          </AddDisclosure>
         )}
         {data.animalHealthProducts.length > 0 ? (
           <div className="table-scroll">
@@ -1011,9 +1292,9 @@ export function AnimalSection({
             ))}</tbody></table>
           </div>
         ) : <p className="field-help">{sw ? "Hakuna chanjo au dawa zilizosajiliwa." : "No vaccines or medicines registered yet."}</p>}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "health" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Ratiba za chanjo na zinazokaribia" : "Vaccination schedules and reminders"}</h3>
@@ -1021,6 +1302,7 @@ export function AnimalSection({
           </div>
         </div>
         {isOwner && (
+          <AddDisclosure title={sw ? "Ongeza ratiba ya chanjo" : "Add vaccination schedule"}>
           <ActionForm action={createAnimalVaccinationScheduleAction} submitLabel={sw ? "Hifadhi ratiba" : "Save schedule"} className="form-grid">
             <FormField label={sw ? "Jina la ratiba" : "Schedule title"} name="title" required />
             <FormSelect label={sw ? "Chanjo" : "Vaccine"} name="productId" options={data.animalHealthProducts.filter((product) => product.type === "VACCINE").map((product) => ({ value: product.id, label: product.name }))} />
@@ -1033,6 +1315,7 @@ export function AnimalSection({
             <FormTextArea label={sw ? "Maelezo yaliyothibitishwa" : "Verified notes"} name="notes" />
             <p className="field-help field-wide">{sw ? "Weka umri au tarehe ya kwanza; kwa kikundi maalum tumia tarehe. Hakuna ratiba ya chanjo iliyotolewa kama ukweli." : "Enter an age or first due date; a specific group requires a date. No vaccine schedules are supplied as facts."}</p>
           </ActionForm>
+          </AddDisclosure>
         )}
         {scheduleReminders.length > 0 ? (
           <div className="table-scroll"><table><thead><tr>
@@ -1061,15 +1344,16 @@ export function AnimalSection({
             ))}
           </ul>
         )}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "health" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Kesi za afya na matibabu" : "Health cases and treatments"}</h3>
             <p>{sw ? "Rekodi dalili na matokeo; kwa uchunguzi na matibabu, wasiliana na mtaalamu wa mifugo." : "Record symptoms and outcomes; consult a livestock professional for diagnosis and treatment."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Rekodi kesi ya afya" : "Record a health case"}>
         <ActionForm
           action={recordAnimalHealthCaseAction}
           submitLabel={sw ? "Rekodi kesi" : "Record health case"}
@@ -1086,6 +1370,8 @@ export function AnimalSection({
           <FormField label={sw ? "Matokeo" : "Outcome"} name="outcome" required={false} />
           <FormField label={sw ? "Tarehe" : "Date"} name="openedAt" type="date" />
         </ActionForm>
+        </AddDisclosure>
+        <AddDisclosure title={sw ? "Rekodi tiba au chanjo" : "Record treatment or vaccination"}>
         <ActionForm
           action={recordAnimalHealthAction}
           submitLabel={sw ? "Hifadhi tiba/chanjo" : "Save treatment/vaccination"}
@@ -1106,6 +1392,7 @@ export function AnimalSection({
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
           <p className="field-help field-wide">{sw ? "Bidhaa iliyounganishwa na akiba inahitaji kiasi kilichotumika; kiasi hicho hupunguzwa na gharama huhesabiwa kutokana na manunuzi yaliyorekodiwa." : "A product linked to stock requires the amount used; that amount is deducted and cost is calculated from recorded stock purchases."}</p>
         </ActionForm>
+        </AddDisclosure>
         {activeWithdrawalRecords.length > 0 && (
           <div className="alert-card status-warning" role="status">
             <strong>{sw ? "Vipindi vya kusubiri vinavyoendelea" : "Active withdrawal periods"}</strong>
@@ -1153,15 +1440,16 @@ export function AnimalSection({
             </tr>
           ))}</tbody></table></div>
         )}
-      </section>
+      </section>}
 
-      <section className="panel">
+      {activeSection === "daily" && <section className="panel">
         <div className="panel-header">
           <div>
             <h3>{sw ? "Vipimo vya uzalishaji na ukuaji" : "Performance records"}</h3>
             <p>{sw ? "Rekodi uzito, maziwa na mayai; matukio ya kuzaliwa/kuachisha hunyonya yako kwenye matukio ya mifugo." : "Record weight, milk and eggs; births and weaning are recorded in animal events."}</p>
           </div>
         </div>
+        <AddDisclosure title={sw ? "Rekodi kipimo cha uzalishaji/ukuaji" : "Record production or growth"}>
         <ActionForm
           action={recordAnimalPerformanceAction}
           submitLabel={sw ? "Hifadhi kipimo" : "Save measurement"}
@@ -1175,9 +1463,11 @@ export function AnimalSection({
           <FormSelect label={sw ? "Kipimo" : "Measure"} name="type" options={performanceTypes.map((type) => ({ value: type, label: healthTypeLabel(type) }))} />
           <FormField label={sw ? "Kiasi" : "Quantity"} name="quantity" type="number" min="0.0001" step="any" required />
           <FormField label={sw ? "Kipimo (weka kilichotumika shambani)" : "Unit (enter the farm's unit)"} name="unit" placeholder={sw ? "mf. kg, lita, tray" : "e.g. kg, litre, tray"} required />
+          <FormSelect label={sw ? "Chakula kilichotumika (hiari)" : "Feed used (optional)"} name="feedItemId" required={false} options={feedItems.map((item) => ({ value: item.id, label: item.name }))} />
           <FormField label={sw ? "Tarehe" : "Date"} name="recordedAt" type="date" />
           <FormTextArea label={sw ? "Maelezo" : "Notes"} name="notes" />
         </ActionForm>
+        </AddDisclosure>
         {data.animalPerformanceRecords.length > 0 ? (
           <>
             <p className="field-help">
@@ -1192,13 +1482,13 @@ export function AnimalSection({
               <th>{sw ? "Kipimo" : "Measure"}</th><th>{sw ? "Kiasi" : "Quantity"}</th><th>{sw ? "Maelezo" : "Notes"}</th>
             </tr></thead><tbody>{data.animalPerformanceRecords.map((record) => (
               <tr key={record.id}>
-                <td>{date(record.recordedAt)}</td><td>{record.animalGroupName ?? record.animalTag ?? "—"}</td>
+                <td>{date(record.recordedAt)}</td><td>{record.animalName ? `${record.animalName} · ` : ""}{record.animalGroupName ?? record.animalTag ?? "—"}</td>
                 <td>{healthTypeLabel(record.type)}</td><td>{number(record.quantity)} {record.unit}</td><td>{record.notes ?? "—"}</td>
               </tr>
             ))}</tbody></table></div>
           </>
         ) : <p className="field-help">{sw ? "Bado hakuna vipimo vya uzalishaji." : "No performance measurements recorded yet."}</p>}
-      </section>
+      </section>}
     </div>
   );
 }

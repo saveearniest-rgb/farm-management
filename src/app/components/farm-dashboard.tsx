@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type SVGProps,
@@ -25,8 +26,10 @@ import {
   Clock3,
   CloudSun,
   Download,
+  Dna,
   FileSpreadsheet,
   Flower2,
+  HeartPulse,
   LayoutDashboard,
   Leaf,
   LogOut,
@@ -108,11 +111,18 @@ import { ManagerInviteForm } from "./manager-invite-form";
 import { ThemeToggle } from "./theme-toggle";
 import { FileAttachments } from "./file-attachments";
 import { OfflineSyncStatus } from "./offline-sync-status";
-import { AnimalSection } from "./animal-section";
+import { AnimalSection, type AnimalSectionId } from "./animal-section";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number; strokeWidth?: number }>;
 type DivisionId = "crops" | "animals";
 type SectionId = "overview" | "land" | "crops" | "nursery" | "tasks" | "inputs" | "labour" | "reports" | "settings" | "animals";
+type SearchResult = {
+  id: string;
+  title: string;
+  detail: string;
+  section: SectionId;
+  animalSection?: AnimalSectionId;
+};
 
 const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; division: DivisionId; ownerOnly?: boolean }> = [
   { id: "overview", key: "dashboard", icon: LayoutDashboard, division: "crops" },
@@ -125,6 +135,21 @@ const navigation: Array<{ id: SectionId; key: string; icon: IconComponent; divis
   { id: "reports", key: "reports", icon: BarChart3, division: "crops", ownerOnly: true },
   { id: "settings", key: "settings", icon: Settings2, division: "crops" },
   { id: "animals", key: "animalFarming", icon: PawPrint, division: "animals" },
+];
+
+const animalNavigation: Array<{
+  id: AnimalSectionId;
+  label: { en: string; sw: string };
+  icon: IconComponent;
+  ownerOnly?: boolean;
+}> = [
+  { id: "overview", label: { en: "Overview", sw: "Muhtasari" }, icon: LayoutDashboard },
+  { id: "herd", label: { en: "Herd & animals", sw: "Vikundi na wanyama" }, icon: PawPrint },
+  { id: "breeding", label: { en: "Breeding & genetics", sw: "Uzazi na jenetiki" }, icon: Dna },
+  { id: "daily", label: { en: "Daily care", sw: "Kazi za kila siku" }, icon: Activity },
+  { id: "feed", label: { en: "Feed", sw: "Chakula" }, icon: Wheat },
+  { id: "health", label: { en: "Health & vaccines", sw: "Afya na chanjo" }, icon: HeartPulse },
+  { id: "income", label: { en: "Sales & investment", sw: "Mauzo na uwekezaji" }, icon: CircleDollarSign, ownerOnly: true },
 ];
 
 const expenseCategories = [
@@ -199,6 +224,7 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 export function FarmDashboard({ data }: { data: DashboardData }) {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const [activeAnimalSection, setActiveAnimalSection] = useState<AnimalSectionId>("overview");
   const activeDivision: DivisionId =
     data.farm.animalDivisionEnabled && activeSection === "animals" ? "animals" : "crops";
   const currentSection: SectionId =
@@ -269,11 +295,185 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
     (item) => item.lowStockThreshold !== null && item.balance <= item.lowStockThreshold,
   );
   const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  const searchResults = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase(locale === "sw" ? "sw-TZ" : "en-US");
+    if (!query) return [];
+    const results: SearchResult[] = [];
+    const matches = (...values: Array<string | null | undefined>) =>
+      values.some((entry) => entry?.toLocaleLowerCase(locale === "sw" ? "sw-TZ" : "en-US").includes(query));
+    const add = (result: SearchResult) => results.push(result);
+
+    for (const plot of data.plots) {
+      if (matches(plot.name, plot.holdingName, plot.soilType, plot.waterSource)) {
+        add({ id: `plot-${plot.id}`, title: plot.name, detail: locale === "sw" ? "Ardhi na vitalu" : "Land & plots", section: "land" });
+      }
+    }
+    for (const holding of data.holdings) {
+      if (matches(holding.name, holding.ownerName, holding.notes)) {
+        add({ id: `holding-${holding.id}`, title: holding.name, detail: locale === "sw" ? "Umiliki wa ardhi" : "Land holding", section: "land" });
+      }
+    }
+    for (const cycle of data.cycles) {
+      if (matches(cycle.cropName, cycle.plotName, cycle.variety, cycle.status)) {
+        add({ id: `cycle-${cycle.id}`, title: cycle.cropName, detail: `${cycle.plotName}${cycle.variety ? ` · ${cycle.variety}` : ""}`, section: "crops" });
+      }
+    }
+    for (const task of data.tasks) {
+      if (matches(task.titleEn, task.titleSw, task.cropName, task.plotName, task.notes)) {
+        add({ id: `task-${task.id}`, title: locale === "sw" ? task.titleSw : task.titleEn, detail: `${task.cropName} · ${task.plotName}`, section: "tasks" });
+      }
+    }
+    for (const crop of data.cropTypes) {
+      if (matches(crop.name, crop.varietyDefault)) {
+        add({ id: `crop-${crop.id}`, title: crop.name, detail: locale === "sw" ? "Aina ya zao" : "Crop type", section: "crops" });
+      }
+    }
+    for (const item of data.stockItems) {
+      if (matches(item.name, item.category, item.unit)) {
+        add({ id: `stock-${item.id}`, title: item.name, detail: `${item.category.toLowerCase().replaceAll("_", " ")} · ${locale === "sw" ? "Pembejeo na akiba" : "Inputs & stock"}`, section: "inputs" });
+      }
+    }
+    if (data.farm.animalDivisionEnabled) {
+      for (const animal of data.animals) {
+        if (matches(animal.name, animal.tagNumber, animal.species, animal.breedName, animal.groupName)) {
+          add({ id: `animal-${animal.id}`, title: animal.name ? `${animal.name} · ${animal.tagNumber}` : animal.tagNumber, detail: `${animal.species} · ${locale === "sw" ? "Mnyama" : "Animal"}`, section: "animals", animalSection: "herd" });
+        }
+      }
+      for (const group of data.animalGroups) {
+        if (matches(group.name, group.species)) {
+          add({ id: `animal-group-${group.id}`, title: group.name, detail: `${group.species} · ${locale === "sw" ? "Kikundi cha mifugo" : "Animal group"}`, section: "animals", animalSection: "herd" });
+        }
+      }
+      for (const feed of data.stockItems.filter((item) => item.category === "FEED")) {
+        if (matches(feed.name, feed.qualityNotes, feed.storageInstructions)) {
+          add({ id: `feed-${feed.id}`, title: feed.name, detail: locale === "sw" ? "Chakula cha mifugo" : "Animal feed", section: "animals", animalSection: "feed" });
+        }
+      }
+      for (const record of data.animalDailyRecords) {
+        if (matches(record.type, record.notes, record.animalName, record.animalTag, record.animalGroupName, record.feedItemName)) {
+          add({
+            id: `animal-daily-${record.id}`,
+            title: record.animalName ?? record.animalTag ?? record.animalGroupName ?? record.feedItemName ?? record.type,
+            detail: `${record.type.toLowerCase().replaceAll("_", " ")} · ${locale === "sw" ? "Utunzaji wa kila siku" : "Daily care"}`,
+            section: "animals",
+            animalSection: "daily",
+          });
+        }
+      }
+      for (const healthCase of data.animalHealthCases) {
+        if (matches(healthCase.animalTag, healthCase.animalGroupName, healthCase.symptoms, healthCase.diagnosis, healthCase.diagnosedBy, healthCase.outcome)) {
+          add({
+            id: `animal-case-${healthCase.id}`,
+            title: healthCase.animalTag ?? healthCase.animalGroupName ?? healthCase.symptoms ?? (locale === "sw" ? "Kesi ya afya" : "Health case"),
+            detail: `${healthCase.diagnosis ?? healthCase.symptoms ?? (locale === "sw" ? "Kesi ya afya" : "Health case")} · ${locale === "sw" ? "Kesi ya afya" : "Health case"}`,
+            section: "animals",
+            animalSection: "health",
+          });
+        }
+      }
+      for (const record of data.animalHealthRecords) {
+        if (matches(record.animalTag, record.animalGroupName, record.productName, record.scheduleTitle, record.type, record.batch, record.notes)) {
+          add({
+            id: `animal-health-${record.id}`,
+            title: record.animalTag ?? record.animalGroupName ?? record.productName ?? record.type,
+            detail: `${record.productName ?? record.type.toLowerCase().replaceAll("_", " ")} · ${locale === "sw" ? "Afya" : "Health"}`,
+            section: "animals",
+            animalSection: "health",
+          });
+        }
+      }
+      for (const schedule of data.animalVaccinationSchedules) {
+        if (matches(schedule.title, schedule.productName, schedule.species, schedule.breed, schedule.notes)) {
+          add({
+            id: `animal-schedule-${schedule.id}`,
+            title: schedule.title,
+            detail: `${schedule.productName} · ${locale === "sw" ? "Ratiba ya afya" : "Health schedule"}`,
+            section: "animals",
+            animalSection: "health",
+          });
+        }
+      }
+      for (const record of data.animalPerformanceRecords) {
+        if (matches(record.animalName, record.animalTag, record.animalGroupName, record.feedItemName, record.type, record.notes)) {
+          add({
+            id: `animal-performance-${record.id}`,
+            title: record.animalName ?? record.animalTag ?? record.animalGroupName ?? record.type,
+            detail: `${record.type.toLowerCase()} · ${locale === "sw" ? "Utendaji wa mifugo" : "Animal performance"}`,
+            section: "animals",
+            animalSection: "daily",
+          });
+        }
+      }
+      for (const record of data.animalBreedingRecords) {
+        if (matches(record.damTag, record.sireTag, record.species, record.semenBatch, record.method, record.pregnancyResult, record.birthOutcome, record.notes)) {
+          add({
+            id: `animal-breeding-${record.id}`,
+            title: `${record.damTag}${record.sireTag ? ` × ${record.sireTag}` : ""}`,
+            detail: `${record.method.toLowerCase().replaceAll("_", " ")} · ${locale === "sw" ? "Uzazi" : "Breeding"}`,
+            section: "animals",
+            animalSection: "breeding",
+          });
+        }
+      }
+    }
+    for (const worker of data.workers) {
+      if (matches(worker.name)) {
+        add({ id: `worker-${worker.id}`, title: worker.name, detail: locale === "sw" ? "Mfanyakazi" : "Worker", section: "labour" });
+      }
+    }
+    for (const log of data.logs) {
+      if (matches(log.body, log.cropName, log.weather, log.whoWorked)) {
+        add({ id: `log-${log.id}`, title: log.body.slice(0, 90), detail: `${log.cropName ?? (locale === "sw" ? "Kumbukumbu ya shamba" : "Farm log")} · ${locale === "sw" ? "Muhtasari" : "Overview"}`, section: "overview" });
+      }
+    }
+    const normalize = (value: string) => value.toLocaleLowerCase(locale === "sw" ? "sw-TZ" : "en-US");
+    const score = (result: SearchResult) => {
+      const title = normalize(result.title);
+      const detail = normalize(result.detail);
+      const titleScore = title === query ? 4 : title.startsWith(query) ? 3 : title.includes(query) ? 2 : 0;
+      const sectionScore = (activeDivision === "animals") === (result.section === "animals") ? 1 : 0;
+      return titleScore + sectionScore + (detail.includes(query) ? 0.25 : 0);
+    };
+    return results.sort((left, right) => score(right) - score(left)).slice(0, 8);
+  }, [activeDivision, data, locale, search]);
 
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+
+  useEffect(() => {
+    function handleSearchShortcut(event: KeyboardEvent) {
+      if (
+        event.key === "/" &&
+        !(event.target instanceof HTMLInputElement) &&
+        !(event.target instanceof HTMLTextAreaElement) &&
+        !(event.target instanceof HTMLSelectElement) &&
+        !(event.target instanceof HTMLElement && event.target.isContentEditable)
+      ) {
+        event.preventDefault();
+        setSearchOpen(true);
+        searchInputRef.current?.focus();
+      }
+      if (event.key === "Escape") {
+        setSearch("");
+        setSearchOpen(false);
+        searchInputRef.current?.blur();
+      }
+    }
+    window.addEventListener("keydown", handleSearchShortcut);
+    return () => window.removeEventListener("keydown", handleSearchShortcut);
+  }, []);
+
+  function openSearchResult(result: SearchResult) {
+    if (result.animalSection) setActiveAnimalSection(result.animalSection);
+    setActiveSection(result.section);
+    setSearch("");
+    setSearchOpen(false);
+  }
 
   const selectedSectionTitle = t(section.key);
   const content = (() => {
@@ -302,7 +502,7 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
         return <SettingsSection data={data} locale={locale} isOwner={isOwner} />;
       case "animals":
         return data.farm.animalDivisionEnabled
-          ? <AnimalSection data={data} locale={locale} isOwner={isOwner} />
+          ? <AnimalSection data={data} locale={locale} isOwner={isOwner} activeSection={activeAnimalSection} />
           : null;
       default:
         return (
@@ -386,26 +586,44 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
         </div>
         <nav aria-label={locale === "sw" ? "Urambazaji mkuu" : "Main navigation"} className="side-nav">
           <span className="nav-group-label">{activeDivision === "animals" ? t("animalFarming").toLocaleUpperCase(locale === "sw" ? "sw-TZ" : "en-US") : locale === "sw" ? "MAZAO" : "CROPS"}</span>
-          {visibleNavigation.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                aria-current={currentSection === item.id ? "page" : undefined}
-                className={`nav-item ${currentSection === item.id ? "active" : ""}`}
-                key={item.id}
-                onClick={() => {
-                  setActiveSection(item.id);
-                }}
-                type="button"
-              >
-                <Icon size={18} strokeWidth={1.8} />
-                <span>{t(item.key)}</span>
-                {item.id === "tasks" && data.tasks.some((task) => task.status === "PENDING") && (
-                  <span className="nav-count">{data.tasks.filter((task) => task.status === "PENDING").length}</span>
-                )}
-              </button>
-            );
-          })}
+          {activeDivision === "animals" ? animalNavigation
+            .filter((item) => !item.ownerOnly || isOwner)
+            .map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  aria-current={activeAnimalSection === item.id ? "page" : undefined}
+                  aria-label={item.label[locale]}
+                  className={`nav-item ${activeAnimalSection === item.id ? "active" : ""}`}
+                  key={item.id}
+                  onClick={() => setActiveAnimalSection(item.id)}
+                  title={item.label[locale]}
+                  type="button"
+                >
+                  <Icon size={18} strokeWidth={1.8} />
+                  <span>{item.label[locale]}</span>
+                </button>
+              );
+            }) : visibleNavigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  aria-current={currentSection === item.id ? "page" : undefined}
+                  className={`nav-item ${currentSection === item.id ? "active" : ""}`}
+                  key={item.id}
+                  onClick={() => {
+                    setActiveSection(item.id);
+                  }}
+                  type="button"
+                >
+                  <Icon size={18} strokeWidth={1.8} />
+                  <span>{t(item.key)}</span>
+                  {item.id === "tasks" && data.tasks.some((task) => task.status === "PENDING") && (
+                    <span className="nav-count">{data.tasks.filter((task) => task.status === "PENDING").length}</span>
+                  )}
+                </button>
+              );
+            })}
         </nav>
         <div className="sidebar-bottom">
           <div className="connectivity-card">
@@ -438,11 +656,55 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
             <strong>{selectedSectionTitle}</strong>
           </div>
           <div className="topbar-actions">
-            <label className="search-box">
-              <Search size={16} />
-              <input aria-label={t("search")} onChange={(event) => setSearch(event.target.value)} placeholder={t("search")} value={search} />
+            <div className={`search-box ${searchOpen ? "is-open" : ""}`}>
+              <button
+                aria-label={t("search")}
+                className="search-trigger"
+                onClick={() => {
+                  setSearchOpen(true);
+                  requestAnimationFrame(() => searchInputRef.current?.focus());
+                }}
+                type="button"
+              >
+                <Search size={16} />
+              </button>
+              <input
+                ref={searchInputRef}
+                aria-controls="farm-search-results"
+                aria-expanded={Boolean(search.trim())}
+                aria-label={t("search")}
+                autoComplete="off"
+                onChange={(event) => setSearch(event.target.value)}
+                onFocus={() => setSearchOpen(true)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && searchResults[0]) {
+                    event.preventDefault();
+                    openSearchResult(searchResults[0]);
+                  }
+                }}
+                placeholder={t("search")}
+                role="combobox"
+                value={search}
+              />
               <kbd>/</kbd>
-            </label>
+              {search.trim() && (
+                <div className="search-results" id="farm-search-results" role="listbox" aria-label={t("search")}>
+                  {searchResults.length ? searchResults.map((result) => (
+                    <button
+                      id={`search-result-${result.id}`}
+                      key={result.id}
+                      onClick={() => openSearchResult(result)}
+                      aria-selected={false}
+                      role="option"
+                      type="button"
+                    >
+                      <strong>{result.title}</strong>
+                      <span>{result.detail}</span>
+                    </button>
+                  )) : <p>{t("searchNoResults")}</p>}
+                </div>
+              )}
+            </div>
             <LocaleSwitcher locale={locale} />
             <ThemeToggle locale={locale} />
             <button className="icon-button notification-button" aria-label={t("notifications")} type="button">
@@ -492,7 +754,6 @@ export function FarmDashboard({ data }: { data: DashboardData }) {
           {content}
         </div>
       </main>
-      <span className="sr-only">{search ? `Search: ${search}` : ""}</span>
     </div>
   );
 }

@@ -44,92 +44,94 @@ export function AuthPanel({
           <div className="story-decoration story-decoration-two" />
         </section>
 
-        <section className="auth-card">
-          <div className="auth-locale">
-            <ThemeToggle locale={locale} />
-            <label htmlFor="auth-language">{t("language")}</label>
-            <select
-              id="auth-language"
-              onChange={(event) => setLocale(event.target.value as Locale)}
-              value={locale}
-            >
-              <option value="en">{t("english")}</option>
-              <option value="sw">{t("kiswahili")}</option>
-            </select>
-          </div>
-          <div className="auth-heading">
-            <h2>{registering ? t("createAccount") : t("signIn")}</h2>
-            <p>{registering ? t("setupRequired") : t("welcomeBack")}</p>
-          </div>
+        <div className="auth-panel-column">
+          <section className="auth-card">
+            <div className="auth-locale">
+              <ThemeToggle locale={locale} />
+              <label htmlFor="auth-language">{t("language")}</label>
+              <select
+                id="auth-language"
+                onChange={(event) => setLocale(event.target.value as Locale)}
+                value={locale}
+              >
+                <option value="en">{t("english")}</option>
+                <option value="sw">{t("kiswahili")}</option>
+              </select>
+            </div>
+            <div className="auth-heading">
+              <h2>{registering ? t("createAccount") : t("signIn")}</h2>
+              <p>{registering ? t("setupRequired") : t("welcomeBack")}</p>
+            </div>
 
-          {registering ? (
-            <form action={signupFormAction} className="auth-form">
-              <label className="field">
-                <span>{t("fullName")}</span>
-                <input autoComplete="name" name="name" required minLength={2} />
-              </label>
-              <label className="field">
-                <span>{t("email")}</span>
-                <input autoComplete="email" name="email" type="email" required />
-              </label>
-              <label className="field">
-                <span>{t("password")}</span>
-                <input autoComplete="new-password" name="password" type="password" minLength={10} required />
-                <small>{t("passwordHint")}</small>
-              </label>
-              <label className="field">
-                <span>{t("farmName")}</span>
-                <input name="farmName" autoComplete="organization" minLength={2} required />
-              </label>
-              <label className="field">
-                <span>{locale === "sw" ? "Ukubwa wa shamba" : "Farm size (optional)"}</span>
-                <div className="input-with-unit">
-                  <input name="totalAreaValue" type="number" min="0.0001" step="any" />
-                  <select aria-label={locale === "sw" ? "Kipimo cha ukubwa wa shamba" : "Farm size unit"} name="totalAreaUnit" defaultValue="acre">
-                    <option value="acre">{locale === "sw" ? "Ekari" : "Acres"}</option>
-                    <option value="hectare">{locale === "sw" ? "Hekta" : "Hectares"}</option>
-                  </select>
-                </div>
-              </label>
-              <label className="field">
-                <span>{t("region")}</span>
-                <input name="region" autoComplete="address-level1" />
-              </label>
-              <input name="locale" type="hidden" value={locale} />
-              <input name="redirectTo" type="hidden" value={redirectTo} />
-              <button className="button button-primary auth-submit" disabled={signupPending} type="submit">
-                {signupPending ? t("creating") : t("createWorkspace")}
-                <ArrowRight size={17} />
-              </button>
-              <p aria-live="polite" className="form-message" role="status">{signupState.message}</p>
-            </form>
-          ) : (
-            <form action={loginFormAction} className="auth-form">
-              <input name="redirectTo" type="hidden" value={redirectTo} />
-              <label className="field">
-                <span>{t("email")}</span>
-                <input autoComplete="email" name="email" type="email" required />
-              </label>
-              <label className="field">
-                <span>{t("password")}</span>
-                <input autoComplete="current-password" name="password" type="password" required />
-              </label>
-              <button className="button button-primary auth-submit" disabled={loginPending} type="submit">
-                {loginPending ? t("signingIn") : t("login")}
-                <ArrowRight size={17} />
-              </button>
-              <p aria-live="polite" className="form-message" role="status">{loginState.message}</p>
-            </form>
-          )}
+            {registering ? (
+              <form action={signupFormAction} className="auth-form">
+                <label className="field">
+                  <span>{t("fullName")}</span>
+                  <input autoComplete="name" name="name" required minLength={2} />
+                </label>
+                <label className="field">
+                  <span>{t("email")}</span>
+                  <input autoComplete="email" name="email" type="email" required />
+                </label>
+                <label className="field">
+                  <span>{t("password")}</span>
+                  <input autoComplete="new-password" name="password" type="password" minLength={10} required />
+                  <small>{t("passwordHint")}</small>
+                </label>
+                <label className="field">
+                  <span>{t("farmName")}</span>
+                  <input name="farmName" autoComplete="organization" minLength={2} required />
+                </label>
+                <label className="field">
+                  <span>{locale === "sw" ? "Ukubwa wa shamba" : "Farm size (optional)"}</span>
+                  <div className="input-with-unit">
+                    <input name="totalAreaValue" type="number" min="0.0001" step="any" />
+                    <select aria-label={locale === "sw" ? "Kipimo cha ukubwa wa shamba" : "Farm size unit"} name="totalAreaUnit" defaultValue="acre">
+                      <option value="acre">{locale === "sw" ? "Ekari" : "Acres"}</option>
+                      <option value="hectare">{locale === "sw" ? "Hekta" : "Hectares"}</option>
+                    </select>
+                  </div>
+                </label>
+                <label className="field">
+                  <span>{t("region")}</span>
+                  <input name="region" autoComplete="address-level1" />
+                </label>
+                <input name="locale" type="hidden" value={locale} />
+                <input name="redirectTo" type="hidden" value={redirectTo} />
+                <button className="button button-primary auth-submit" disabled={signupPending} type="submit">
+                  {signupPending ? t("creating") : t("createWorkspace")}
+                  <ArrowRight size={17} />
+                </button>
+                <p aria-live="polite" className="form-message" role="status">{signupState.message}</p>
+              </form>
+            ) : (
+              <form action={loginFormAction} className="auth-form">
+                <input name="redirectTo" type="hidden" value={redirectTo} />
+                <label className="field">
+                  <span>{t("email")}</span>
+                  <input autoComplete="email" name="email" type="email" required />
+                </label>
+                <label className="field">
+                  <span>{t("password")}</span>
+                  <input autoComplete="current-password" name="password" type="password" required />
+                </label>
+                <button className="button button-primary auth-submit" disabled={loginPending} type="submit">
+                  {loginPending ? t("signingIn") : t("login")}
+                  <ArrowRight size={17} />
+                </button>
+                <p aria-live="polite" className="form-message" role="status">{loginState.message}</p>
+              </form>
+            )}
 
-          <p className="auth-switch">
-            {registering ? t("alreadyHaveAccount") : t("newHere")}{" "}
-            <button onClick={() => setRegistering(!registering)} type="button">
-              {registering ? t("signIn") : t("register")}
-            </button>
-          </p>
-          <div className="auth-secure"><span className="secure-dot" /> {t("secureNote")}</div>
-        </section>
+            <p className="auth-switch">
+              {registering ? t("alreadyHaveAccount") : t("newHere")}{" "}
+              <button onClick={() => setRegistering(!registering)} type="button">
+                {registering ? t("signIn") : t("register")}
+              </button>
+            </p>
+            <div className="auth-secure"><span className="secure-dot" /> {t("secureNote")}</div>
+          </section>
+        </div>
       </div>
       <footer className="auth-footer">
         <span>© {new Date().getFullYear()} Shamba</span>

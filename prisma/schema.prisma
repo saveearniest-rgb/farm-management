@@ -884,19 +884,28 @@ model AnimalSalesForecast {
 }
 
 model StockItem {
-  id                String          @id @default(cuid())
-  farmId            String
-  name              String
-  category          ExpenseCategory
-  unit              String
-  lowStockThreshold Decimal?        @db.Decimal(14, 4)
-  createdAt         DateTime        @default(now())
+  id                  String          @id @default(cuid())
+  farmId              String
+  name                String
+  category            ExpenseCategory
+  unit                String
+  lowStockThreshold   Decimal?        @db.Decimal(14, 4)
+  crudeProteinPct     Decimal?        @db.Decimal(8, 4)
+  crudeFiberPct       Decimal?        @db.Decimal(8, 4)
+  energyValue         Decimal?        @db.Decimal(14, 4)
+  energyUnit          String?
+  qualityNotes        String?
+  storageInstructions String?
+  shelfLifeDays       Int?
+  openedLifeDays      Int?
+  createdAt           DateTime        @default(now())
 
-  farm               Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  movements          StockMovement[]
-  feedRations        FeedRation[]
-  animalDailyRecords AnimalDailyRecord[]
-  healthProducts     AnimalHealthProduct[]
+  farm                     Farm                      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  movements                StockMovement[]
+  feedRations              FeedRation[]
+  animalDailyRecords       AnimalDailyRecord[]
+  animalPerformanceRecords AnimalPerformanceRecord[]
+  healthProducts           AnimalHealthProduct[]
 
   @@unique([farmId, name])
 }
@@ -953,6 +962,7 @@ model Animal {
   id               String    @id @default(cuid())
   farmId           String
   tagNumber        String
+  name             String?
   species          String
   breed            String?
   breedId          String?
@@ -1252,6 +1262,7 @@ model AnimalPerformanceRecord {
   farmId        String
   animalId      String?
   animalGroupId String?
+  feedItemId    String?
   type          AnimalPerformanceType
   quantity      Decimal               @db.Decimal(14, 4)
   unit          String
@@ -1263,10 +1274,12 @@ model AnimalPerformanceRecord {
   farm        Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
   animal      Animal?      @relation(fields: [animalId], references: [id], onDelete: Cascade)
   animalGroup AnimalGroup? @relation(fields: [animalGroupId], references: [id], onDelete: Cascade)
+  feedItem    StockItem?   @relation(fields: [feedItemId], references: [id], onDelete: SetNull)
 
   @@index([farmId, type, recordedAt])
   @@index([farmId, animalId, recordedAt])
   @@index([farmId, animalGroupId, recordedAt])
+  @@index([farmId, feedItemId, recordedAt])
 }
 
 model AnimalTraitRecord {

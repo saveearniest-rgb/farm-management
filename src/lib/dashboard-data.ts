@@ -48,11 +48,13 @@ export async function getDashboardData(context: Context) {
     rawAnimalGroups,
     rawAnimals,
     rawAnimalDailyRecords,
+    rawAnimalFeedIntakeSummary,
     rawAnimalHealthProducts,
     rawAnimalVaccinationSchedules,
     rawAnimalHealthCases,
     rawAnimalHealthRecords,
     rawAnimalPerformanceRecords,
+    rawAnimalFeedPerformanceSummary,
     rawAnimalSpeciesProfiles,
     rawAnimalBreeds,
     rawAnimalLineage,
@@ -330,6 +332,7 @@ export async function getDashboardData(context: Context) {
       select: {
         id: true,
         tagNumber: true,
+        name: true,
         species: true,
         breed: true,
         sex: true,
@@ -366,10 +369,16 @@ export async function getDashboardData(context: Context) {
       orderBy: { recordedAt: "desc" },
       take: 150,
       include: {
-        animal: { select: { id: true, tagNumber: true } },
+        animal: { select: { id: true, tagNumber: true, name: true } },
         animalGroup: { select: { id: true, name: true } },
         feedItem: { select: { id: true, name: true, unit: true } },
       },
+    }),
+    db.animalDailyRecord.groupBy({
+      by: ["feedItemId"],
+      where: { farmId, type: "FEEDING", feedItemId: { not: null } },
+      _count: { _all: true },
+      _sum: { quantity: true },
     }),
     db.animalHealthProduct.findMany({
       where: { farmId, archivedAt: null },
@@ -437,9 +446,16 @@ export async function getDashboardData(context: Context) {
       orderBy: { recordedAt: "desc" },
       take: 150,
       include: {
-        animal: { select: { id: true, tagNumber: true } },
+        animal: { select: { id: true, tagNumber: true, name: true } },
         animalGroup: { select: { id: true, name: true } },
+        feedItem: { select: { id: true, name: true } },
       },
+    }),
+    db.animalPerformanceRecord.groupBy({
+      by: ["feedItemId", "type", "unit"],
+      where: { farmId, feedItemId: { not: null } },
+      _count: { _all: true },
+      _avg: { quantity: true },
     }),
     db.animalSpeciesProfile.findMany({
       where: { farmId },
@@ -913,6 +929,14 @@ export async function getDashboardData(context: Context) {
         unit: item.unit,
         balance,
         lowStockThreshold: numeric(item.lowStockThreshold),
+        crudeProteinPct: numeric(item.crudeProteinPct),
+        crudeFiberPct: numeric(item.crudeFiberPct),
+        energyValue: numeric(item.energyValue),
+        energyUnit: item.energyUnit,
+        qualityNotes: item.qualityNotes,
+        storageInstructions: item.storageInstructions,
+        shelfLifeDays: item.shelfLifeDays,
+        openedLifeDays: item.openedLifeDays,
       };
     }),
     stockMovements: rawStockMovements.map((movement) => ({
@@ -1053,6 +1077,7 @@ export async function getDashboardData(context: Context) {
     animals: rawAnimals.map((animal) => ({
       id: animal.id,
       tagNumber: animal.tagNumber,
+      name: animal.name,
       species: animal.species,
       breed: animal.breed,
       sex: animal.sex,
@@ -1089,10 +1114,22 @@ export async function getDashboardData(context: Context) {
       notes: record.notes,
       animalId: record.animalId,
       animalTag: record.animal?.tagNumber ?? null,
+      animalName: record.animal?.name ?? null,
       animalGroupId: record.animalGroupId,
       animalGroupName: record.animalGroup?.name ?? null,
+      feedItemId: record.feedItemId,
       feedItemName: record.feedItem?.name ?? null,
     })),
+    animalFeedIntakeSummary: rawAnimalFeedIntakeSummary.flatMap((summary) => {
+      const item = rawStockItems.find((stockItem) => stockItem.id === summary.feedItemId);
+      return item ? [{
+        feedItemId: item.id,
+        feedItemName: item.name,
+        unit: item.unit,
+        totalQuantity: numeric(summary._sum.quantity) ?? 0,
+        recordCount: summary._count._all,
+      }] : [];
+    }),
     animalHealthProducts: rawAnimalHealthProducts.map((product) => ({
       id: product.id,
       name: product.name,
@@ -1169,14 +1206,28 @@ export async function getDashboardData(context: Context) {
       id: record.id,
       animalId: record.animalId,
       animalTag: record.animal?.tagNumber ?? null,
+      animalName: record.animal?.name ?? null,
       animalGroupId: record.animalGroupId,
       animalGroupName: record.animalGroup?.name ?? null,
+      feedItemId: record.feedItemId,
+      feedItemName: record.feedItem?.name ?? null,
       type: record.type,
       quantity: numeric(record.quantity) ?? 0,
       unit: record.unit,
       recordedAt: iso(record.recordedAt),
       notes: record.notes,
     })),
+    animalFeedPerformanceSummary: rawAnimalFeedPerformanceSummary.flatMap((summary) => {
+      const item = rawStockItems.find((stockItem) => stockItem.id === summary.feedItemId);
+      return item ? [{
+        feedItemId: item.id,
+        feedItemName: item.name,
+        type: summary.type,
+        averageQuantity: numeric(summary._avg.quantity),
+        unit: summary.unit,
+        recordCount: summary._count._all,
+      }] : [];
+    }),
     animalSpeciesProfiles: rawAnimalSpeciesProfiles.map((profile) => ({
       id: profile.id,
       species: profile.species,

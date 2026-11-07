@@ -3,6 +3,7 @@ import {
   calculateAnimalGroupCount,
   calculateCurrentAnimalCount,
   calculateFeedPlan,
+  calculateFeedNutrientIntake,
 } from "./animal-management";
 
 describe("animal group and feed calculations", () => {
@@ -45,5 +46,35 @@ describe("animal group and feed calculations", () => {
       days: 2,
       stock: 20,
     }).shortfall).toBe(0);
+  });
+
+  it("calculates feed and recorded nutrient intake in kilograms", () => {
+    expect(calculateFeedNutrientIntake({
+      groupCount: 20,
+      quantityPerHead: 0.25,
+      unit: "kg",
+      days: 10,
+      crudeProteinPct: 16,
+      crudeFiberPct: 12,
+    })).toEqual({
+      dailyFeedPerHeadKg: 0.25,
+      dailyFeedGroupKg: 5,
+      plannedFeedKg: 50,
+      dailyCrudeProteinGroupKg: 0.8,
+      plannedCrudeProteinKg: 8,
+      dailyCrudeFiberGroupKg: 0.6,
+      plannedCrudeFiberKg: 6,
+    });
+  });
+
+  it("does not infer nutrient mass for unknown feed units", () => {
+    expect(calculateFeedNutrientIntake({
+      groupCount: 4,
+      quantityPerHead: 2,
+      unit: "bag",
+      days: 30,
+      crudeProteinPct: 16,
+      crudeFiberPct: null,
+    })).toBeNull();
   });
 });
